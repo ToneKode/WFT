@@ -1,0 +1,52 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# Compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# Object files
+*.o
+*.obj
+*.slo
+*.lo
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE and editor files
+.vscode/
+.vs/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Visual Studio
+*.user
+*.suo
+*.pdb
+*.ilk
+*.log
+[Dd]ebug/
+[Rr]elease/
+
+# Scratch and temporary files
+*.tmp
+*.temp
+
+# vcpkg
+vcpkg_installed/
