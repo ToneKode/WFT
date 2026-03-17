@@ -1,20 +1,19 @@
 cmake_minimum_required(VERSION 3.15)
 
-# ==================== Project Configuration ====================
 project(wft VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# ==================== Dependencies ====================
+
 find_package(CURL REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
-# ==================== Include Paths ====================
+
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
-# ==================== Shared Sources ====================
+
 set(SOURCES
     src/constants.cpp
 )
