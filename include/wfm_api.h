@@ -2,8 +2,10 @@
 #define WFM_API_H
 
 #include <string>
-#include <optional>
 #include <vector>
+#include <map>
+#include <memory>
+#include <stdexcept>
 #include <nlohmann/json.hpp>
 #include "http_client.h"
 #include "types.h"
@@ -14,12 +16,269 @@ using json = nlohmann::json;
 class WarframeMarketAPI
 {
 private:
+    class AuthState
+    {
+    public:
+        virtual ~AuthState() {}
+        virtual bool isAuthenticated() const = 0;
+    };
+
+    class UnauthenticatedState : public AuthState
+    {
+    public:
+        bool isAuthenticated() const override { return false; }
+    };
+
+    class AuthenticatedState : public AuthState
+    {
+    public:
+        bool isAuthenticated() const override { return true; }
+    };
+
+    struct HeaderFactory
+    {
+        static std::map<std::string, std::string> commonJsonHeaders()
+        {
+            return {
+                {"Content-Type", "application/json"},
+                {"Accept", "application/json"},
+                {"User-Agent", "wf-market-cpp/0.1.0"},
+                {"Platform", "pc"},
+                {"Language", "en"},
+                {"Crossplay", "true"}
+            };
+        }
+
+        static std::map<std::string, std::string> loginHeaders()
+        {
+            return {
+                {"Content-Type", "application/json"},
+                {"Authorization", "JWT"}
+            };
+        }
+
+        static std::map<std::string, std::string> publicHeaders()
+        {
+            std::map<std::string, std::string> headers = commonJsonHeaders();
+            headers["auth_type"] = "header";
+            return headers;
+        }
+
+        static std::map<std::string, std::string> authHeaders(const std::string &bearerToken)
+        {
+            std::map<std::string, std::string> headers = commonJsonHeaders();
+            headers["Authorization"] = "Bearer " + bearerToken;
+            return headers;
+        }
+    };
+
     HttpClient http_client;
     std::string jwt;
-    
-    std::string extractBearerToken() const {
-        return jwt.substr(4); // Remove "JWT " prefix
+    std::unique_ptr<AuthState> state;
+
+    std::string extractBearerToken() const
+    {
+        const std::string prefix = "JWT ";
+        if (jwt.size() <= prefix.size() || jwt.compare(0, prefix.size(), prefix) != 0)
+        {
+            throw std::runtime_error("Invalid JWT format. Expected token with 'JWT ' prefix.");
+        }
+        return jwt.substr(prefix.size());
     }
+
+    void ensureAuthenticated() const
+    {
+        if (!state || !state->isAuthenticated())
+        {
+            throw std::runtime_error("Authentication required. Call login() and setJWT() first.");
+        }
+    }
+
+    std::vector<OrderDetail> getMyOrdersImpl()
+    {
+        const std::string auther = extractBearerToken();
+        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
+
+        const std::string url = V2_API + "/orders/my";
+        const std::string response_body = http_client.Get(url, headers);
+        json data = json::parse(response_body);
+
+        if (!data.contains("data") || !data["data"].is_array())
+        {
+            throw std::runtime_error("Invalid API response format");
+        }
+
+        std::vector<OrderDetail> orders;
+        for (const auto &dat : data["data"])
+        {
+            OrderDetail order;
+            order.id = dat["id"].get<std::string>();
+            order.orderType = dat["type"].get<std::string>();
+            order.platinum = dat["platinum"].get<int>();
+            order.quantity = dat["quantity"].get<int>();
+            order.itemId = dat["itemId"].get<std::string>();
+            order.itemSlug = getSlugByID(order.itemId);
+            order.visible = dat.value("visible", true);
+            orders.push_back(order);
+        }
+
+        return orders;
+    }
+
+    std::string createSellOrderImpl(const SellOrderRequest &request)
+    {
+        const std::string auther = extractBearerToken();
+        const std::string itemId = getIDBySlug(request.itemSlug);
+        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
+
+        json payload = {
+            {"itemId", itemId},
+            {"type", "sell"},
+            {"platinum", request.platinum},
+            {"quantity", request.quantity},
+            {"visible", request.visible}
+        };
+
+        if (request.hasRank)
+        {
+            payload["rank"] = request.rank;
+        }
+
+        std::map<std::string, std::string> response_headers;
+        const std::string url = V2_API + "/order/";
+        const std::string data = http_client.post(url, payload, headers, response_headers);
+        json response_data = json::parse(data);
+
+        if (!response_data["error"].is_null())
+        {
+            throw std::runtime_error("API error: " + response_data["error"].get<std::string>());
+        }
+
+        return response_data["data"]["id"].get<std::string>();
+    }
+
+    void updateOrderImpl(const std::string &orderId, const UpdateOrderRequest &request)
+    {
+        if (!request.hasChanges())
+        {
+            throw std::invalid_argument("No fields provided to update");
+        }
+
+        const std::string auther = extractBearerToken();
+        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
+
+        json payload;
+        if (request.hasPlatinum)
+        {
+            payload["platinum"] = request.platinum;
+        }
+        if (request.hasQuantity)
+        {
+            payload["quantity"] = request.quantity;
+        }
+        if (request.hasVisible)
+        {
+            payload["visible"] = request.visible;
+        }
+        if (request.hasRank)
+        {
+            payload["rank"] = request.rank;
+        }
+
+        const std::string url = V2_API + "/order/" + orderId;
+        std::map<std::string, std::string> response_headers;
+        const std::string data = http_client.patch(url, payload, headers, response_headers);
+        json response_data = json::parse(data);
+
+        if (!response_data["error"].is_null())
+        {
+            throw std::runtime_error("API error: " + response_data["error"].get<std::string>());
+        }
+    }
+
+    void closeOrderImpl(const std::string &orderId, int quantity)
+    {
+        const std::string auther = extractBearerToken();
+        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
+
+        const std::string url = V2_API + "/order/" + orderId + "/close";
+        const json payload = {{"quantity", quantity}};
+
+        std::map<std::string, std::string> response_headers;
+        const std::string data = http_client.post(url, payload, headers, response_headers);
+        json response_data = json::parse(data);
+
+        if (!response_data["error"].is_null())
+        {
+            throw std::runtime_error("API error: " + response_data["error"].get<std::string>());
+        }
+    }
+
+    void deleteOrderImpl(const std::string &orderId)
+    {
+        const std::string auther = extractBearerToken();
+        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
+
+        const std::string url = V2_API + "/order/" + orderId;
+        const long response_code = http_client.Delete(url, headers);
+
+        if (response_code != 200)
+        {
+            throw std::runtime_error("Failed to delete order: HTTP " + std::to_string(response_code));
+        }
+    }
+
+public:
+    WarframeMarketAPI() : state(new UnauthenticatedState()) {}
+
+    class AuthenticatedClient
+    {
+    public:
+        explicit AuthenticatedClient(WarframeMarketAPI &apiRef) : api(apiRef) {}
+
+        std::vector<OrderDetail> getMyOrders()
+        {
+            api.ensureAuthenticated();
+            return api.getMyOrdersImpl();
+        }
+
+        std::string createSellOrder(const SellOrderRequest &request)
+        {
+            api.ensureAuthenticated();
+            return api.createSellOrderImpl(request);
+        }
+
+        std::string createSellOrder(const std::string &itemSlug, int platinum, int quantity, bool visible)
+        {
+            SellOrderRequest request;
+            request.itemSlug = itemSlug;
+            request.platinum = platinum;
+            request.quantity = quantity;
+            request.visible = visible;
+            return createSellOrder(request);
+        }
+
+        void updateOrder(const std::string &orderId, const UpdateOrderRequest &request)
+        {
+            api.ensureAuthenticated();
+            api.updateOrderImpl(orderId, request);
+        }
+
+        void closeOrder(const std::string &orderId, int quantity)
+        {
+            api.ensureAuthenticated();
+            api.closeOrderImpl(orderId, quantity);
+        }
+
+        void deleteOrder(const std::string &orderId)
+        {
+            api.ensureAuthenticated();
+            api.deleteOrderImpl(orderId);
+        }
+
+    private:
+        WarframeMarketAPI &api;
+    };
 
 public:
     // ==================== Authentication ====================
@@ -41,10 +300,7 @@ public:
             {"device_id", device_id}
         };
 
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Authorization", "JWT"}
-        };
+        std::map<std::string, std::string> headers = HeaderFactory::loginHeaders();
 
         std::map<std::string, std::string> response_headers;
         std::string url = V1_API + "/auth/signin";
@@ -62,8 +318,33 @@ public:
     }
     
 
-    void setJWT(const std::string& token) { jwt = token; }
+    void setJWT(const std::string& token)
+    {
+        jwt = token;
+        if (jwt.empty())
+        {
+            state.reset(new UnauthenticatedState());
+        }
+        else
+        {
+            state.reset(new AuthenticatedState());
+        }
+    }
+
+    void clearJWT()
+    {
+        jwt.clear();
+        state.reset(new UnauthenticatedState());
+    }
+
     std::string getJWT() const { return jwt; }
+    bool isAuthenticated() const { return state && state->isAuthenticated(); }
+
+    AuthenticatedClient authenticated()
+    {
+        ensureAuthenticated();
+        return AuthenticatedClient(*this);
+    }
 
     // ==================== Item Database ====================
     
@@ -74,14 +355,8 @@ public:
     size_t loadItems()
     {
         const std::string url = V2_API + "/items";
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json; utf-8"},
-            {"Accept", "application/json"},
-            {"auth_type", "header"},
-            {"platform", "pc"},
-            {"language", "en"},
-            {"User-Agent", "wft/1.0"}
-        };
+        std::map<std::string, std::string> headers = HeaderFactory::publicHeaders();
+        headers["Content-Type"] = "application/json; utf-8";
         
         std::string response_body = http_client.Get(url, headers);
         json data = json::parse(response_body);
@@ -138,200 +413,6 @@ public:
     size_t getItemCount() const
     {
         return itemDB.size();
-    }
-
-    // ==================== Order Management ====================
-    
-    /**
-     * @brief Get user's current orders
-     * @return Vector of Order objects
-     */
-    std::vector<OrderDetail> getMyOrders()
-    {
-        std::string auther = extractBearerToken();
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-            {"Platform", "pc"},
-            {"Language", "en"},
-            {"Crossplay", "true"},
-            {"Authorization", "Bearer " + auther}
-        };
-        
-        std::string url = V2_API + "/orders/my";
-        std::string response_body = http_client.Get(url, headers);
-        json data = json::parse(response_body);
-        
-        if (!data.contains("data") || !data["data"].is_array()) {
-            throw std::runtime_error("Invalid API response format");
-        }
-        
-        std::vector<OrderDetail> orders;
-        for (const auto& dat : data["data"]) {
-            OrderDetail order;
-            order.id = dat["id"].get<std::string>();
-            order.orderType = dat["type"].get<std::string>();
-            order.platinum = dat["platinum"].get<int>();
-            order.quantity = dat["quantity"].get<int>();
-            order.itemId = dat["itemId"].get<std::string>();
-            order.itemSlug = getSlugByID(order.itemId);
-            order.visible = dat.value("visible", true);
-            
-            orders.push_back(order);
-        }
-        
-        return orders;
-    }
-    
-    /**
-     * @brief Create a new sell order
-     * @param itemSlug Item slug to sell
-     * @param platinum Price in platinum
-     * @param quantity Number of items
-     * @param visible Whether order is visible
-     * @param rank Optional mod rank
-     * @return Created order ID
-     */
-    std::string createSellOrder(const std::string& itemSlug, int platinum, 
-                                int quantity, bool visible = true, 
-                                std::optional<int> rank = std::nullopt)
-    {
-        std::string auther = extractBearerToken();
-        std::string itemId = getIDBySlug(itemSlug);
-        
-        std::string url = V2_API + "/order/";
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-            {"Platform", "pc"},
-            {"Language", "en"},
-            {"Crossplay", "true"},
-            {"Authorization", "Bearer " + auther}
-        };
-        
-        json payload = {
-            {"itemId", itemId},
-            {"type", "sell"},
-            {"platinum", platinum},
-            {"quantity", quantity},
-            {"visible", visible}
-        };
-        
-        if (rank.has_value()) {
-            payload["rank"] = rank.value();
-        }
-        
-        std::map<std::string, std::string> response_headers;
-        std::string data = http_client.post(url, payload, headers, response_headers);
-        json response_data = json::parse(data);
-        
-        if (!response_data["error"].is_null()) {
-            throw std::runtime_error("API error: " + response_data["error"].get<std::string>());
-        }
-        
-        return response_data["data"]["id"].get<std::string>();
-    }
-    
-    /**
-     * @brief Update an existing order
-     * @param orderId Order ID to update
-     * @param platinum Optional new price
-     * @param quantity Optional new quantity
-     * @param visible Optional visibility setting
-     * @param rank Optional mod rank
-     */
-    void updateOrder(const std::string& orderId, 
-                    std::optional<int> platinum = std::nullopt,
-                    std::optional<int> quantity = std::nullopt,
-                    std::optional<bool> visible = std::nullopt,
-                    std::optional<int> rank = std::nullopt)
-    {
-        std::string auther = extractBearerToken();
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-            {"Platform", "pc"},
-            {"Language", "en"},
-            {"Crossplay", "true"},
-            {"Authorization", "Bearer " + auther}
-        };
-        
-        json payload;
-        if (platinum.has_value()) payload["platinum"] = platinum.value();
-        if (quantity.has_value()) payload["quantity"] = quantity.value();
-        if (visible.has_value()) payload["visible"] = visible.value();
-        if (rank.has_value()) payload["rank"] = rank.value();
-        
-        if (payload.empty()) {
-            throw std::invalid_argument("No fields provided to update");
-        }
-        
-        std::string url = V2_API + "/order/" + orderId;
-        std::map<std::string, std::string> response_headers;
-        std::string data = http_client.patch(url, payload, headers, response_headers);
-        json response_data = json::parse(data);
-        
-        if (!response_data["error"].is_null()) {
-            throw std::runtime_error("API error: " + response_data["error"].get<std::string>());
-        }
-    }
-    
-    /**
-     * @brief Close an order (mark as sold)
-     * @param orderId Order ID to close
-     * @param quantity Number of items sold
-     */
-    void closeOrder(const std::string& orderId, int quantity)
-    {
-        std::string auther = extractBearerToken();
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-            {"Platform", "pc"},
-            {"Language", "en"},
-            {"Crossplay", "true"},
-            {"Authorization", "Bearer " + auther}
-        };
-        
-        std::string url = V2_API + "/order/" + orderId + "/close";
-        json payload = {{"quantity", quantity}};
-        
-        std::map<std::string, std::string> response_headers;
-        std::string data = http_client.post(url, payload, headers, response_headers);
-        json response_data = json::parse(data);
-        
-        if (!response_data["error"].is_null()) {
-            throw std::runtime_error("API error: " + response_data["error"].get<std::string>());
-        }
-    }
-    
-    /**
-     * @brief Delete an order
-     * @param orderId Order ID to delete
-     */
-    void deleteOrder(const std::string& orderId)
-    {
-        std::string auther = extractBearerToken();
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-            {"Platform", "pc"},
-            {"Language", "en"},
-            {"Crossplay", "true"},
-            {"Authorization", "Bearer " + auther}
-        };
-        
-        std::string url = V2_API + "/order/" + orderId;
-        long response_code = http_client.Delete(url, headers);
-        
-        if (response_code != 200) {
-            throw std::runtime_error("Failed to delete order: HTTP " + std::to_string(response_code));
-        }
     }
 };
 

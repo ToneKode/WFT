@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+// ==================== Authentication ====================
 struct AuthResponse
 {
     std::string token;
@@ -11,6 +12,7 @@ struct AuthResponse
     std::string ingame_name;
 };
 
+// ==================== Market Data ====================
 struct Item
 {
     std::string id;
@@ -21,6 +23,7 @@ struct Item
     double avgMinPrice48h = 0.0;
 };
 
+// ==================== Order Models ====================
 struct Order
 {
     std::string id;
@@ -33,6 +36,7 @@ struct Order
     bool visible;
 };
 
+// API response model for authenticated order listing.
 struct OrderDetail
 {
     std::string id;
@@ -42,6 +46,39 @@ struct OrderDetail
     std::string itemId;
     std::string itemSlug;
     bool visible;
+};
+
+// C++14-friendly partial update request for PATCH /order/{id}.
+struct UpdateOrderRequest
+{
+    bool hasPlatinum = false;
+    int platinum = 0;
+
+    bool hasQuantity = false;
+    int quantity = 0;
+
+    bool hasVisible = false;
+    bool visible = true;
+
+    bool hasRank = false;
+    int rank = 0;
+
+    bool hasChanges() const
+    {
+        return hasPlatinum || hasQuantity || hasVisible || hasRank;
+    }
+};
+
+// C++14-friendly order creation request for POST /order/.
+struct SellOrderRequest
+{
+    std::string itemSlug;
+    int platinum = 0;
+    int quantity = 1;
+    bool visible = true;
+
+    bool hasRank = false;
+    int rank = 0;
 };
 
 #endif // TYPES_H

@@ -46,7 +46,7 @@ void displayOrders(const std::vector<OrderDetail>& orders)
     std::cout << "└─────────────────────────────────────────────────────────────┘" << std::endl;
 }
 
-void createOrder(WarframeMarketAPI& api)
+void createOrder(WarframeMarketAPI& api, WarframeMarketAPI::AuthenticatedClient& session)
 {
     std::cout << "\n--- Create Sell Order ---" << std::endl;
     
@@ -110,7 +110,7 @@ void createOrder(WarframeMarketAPI& api)
     // Create the order
     try
     {
-        std::string orderId = api.createSellOrder(slug, platinum, quantity, visible);
+        std::string orderId = session.createSellOrder(slug, platinum, quantity, visible);
         std::cout << "✓ Order created successfully!" << std::endl;
         std::cout << "  Order ID: " << orderId << std::endl;
     }
@@ -120,12 +120,12 @@ void createOrder(WarframeMarketAPI& api)
     }
 }
 
-void updateOrder(WarframeMarketAPI& api)
+void updateOrder(WarframeMarketAPI& api, WarframeMarketAPI::AuthenticatedClient& session)
 {
     std::cout << "\n--- Update Order ---" << std::endl;
     
     // Display current orders
-    auto orders = api.getMyOrders();
+    auto orders = session.getMyOrders();
     displayOrders(orders);
     
     if (orders.empty()) return;
@@ -136,26 +136,37 @@ void updateOrder(WarframeMarketAPI& api)
     std::getline(std::cin, orderId);
     
     // Get new values
-    std::optional<int> platinum, quantity;
-    std::optional<bool> visible;
+    UpdateOrderRequest request;
     std::string input;
     
     std::cout << "Enter new platinum price (or press Enter to skip): ";
     std::getline(std::cin, input);
-    if (!input.empty()) platinum = std::stoi(input);
+    if (!input.empty())
+    {
+        request.hasPlatinum = true;
+        request.platinum = std::stoi(input);
+    }
     
     std::cout << "Enter new quantity (or press Enter to skip): ";
     std::getline(std::cin, input);
-    if (!input.empty()) quantity = std::stoi(input);
+    if (!input.empty())
+    {
+        request.hasQuantity = true;
+        request.quantity = std::stoi(input);
+    }
     
     std::cout << "Set visible? (1/0 or press Enter to skip): ";
     std::getline(std::cin, input);
-    if (!input.empty()) visible = (std::stoi(input) != 0);
+    if (!input.empty())
+    {
+        request.hasVisible = true;
+        request.visible = (std::stoi(input) != 0);
+    }
     
     // Update the order
     try
     {
-        api.updateOrder(orderId, platinum, quantity, visible);
+        session.updateOrder(orderId, request);
         std::cout << "✓ Order updated successfully!" << std::endl;
     }
     catch (const std::exception& e)
@@ -164,12 +175,12 @@ void updateOrder(WarframeMarketAPI& api)
     }
 }
 
-void closeOrder(WarframeMarketAPI& api)
+void closeOrder(WarframeMarketAPI::AuthenticatedClient& session)
 {
     std::cout << "\n--- Close Order ---" << std::endl;
     
     // Display current orders
-    auto orders = api.getMyOrders();
+    auto orders = session.getMyOrders();
     displayOrders(orders);
     
     if (orders.empty()) return;
@@ -187,7 +198,7 @@ void closeOrder(WarframeMarketAPI& api)
     // Close the order
     try
     {
-        api.closeOrder(orderId, quantity);
+        session.closeOrder(orderId, quantity);
         std::cout << "✓ Order closed successfully!" << std::endl;
     }
     catch (const std::exception& e)
@@ -196,12 +207,12 @@ void closeOrder(WarframeMarketAPI& api)
     }
 }
 
-void deleteOrder(WarframeMarketAPI& api)
+void deleteOrder(WarframeMarketAPI::AuthenticatedClient& session)
 {
     std::cout << "\n--- Delete Order ---" << std::endl;
     
     // Display current orders
-    auto orders = api.getMyOrders();
+    auto orders = session.getMyOrders();
     displayOrders(orders);
     
     if (orders.empty()) return;
@@ -225,7 +236,7 @@ void deleteOrder(WarframeMarketAPI& api)
     // Delete the order
     try
     {
-        api.deleteOrder(orderId);
+        session.deleteOrder(orderId);
         std::cout << "✓ Order deleted successfully!" << std::endl;
     }
     catch (const std::exception& e)
@@ -254,6 +265,8 @@ int main()
         api.setJWT(auth.token);
         
         std::cout << "✓ Logged in as: " << auth.ingame_name << std::endl;
+
+        auto session = api.authenticated();
         
         // ==================== Load Items ====================
         std::cout << "\n--- Loading Items Database ---" << std::endl;
@@ -280,21 +293,21 @@ int main()
             {
                 case 1:
                 {
-                    auto orders = api.getMyOrders();
+                    auto orders = session.getMyOrders();
                     displayOrders(orders);
                     break;
                 }
                 case 2:
-                    createOrder(api);
+                    createOrder(api, session);
                     break;
                 case 3:
-                    updateOrder(api);
+                    updateOrder(api, session);
                     break;
                 case 4:
-                    closeOrder(api);
+                    closeOrder(session);
                     break;
                 case 5:
-                    deleteOrder(api);
+                    deleteOrder(session);
                     break;
                 case 0:
                     std::cout << "Goodbye!" << std::endl;

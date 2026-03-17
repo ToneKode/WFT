@@ -6,10 +6,12 @@
 #include <unordered_map>
 #include <stdexcept>
 
+// ==================== API Base URLs ====================
 static const std::string V1_API = "https://api.warframe.market/v1";
 static const std::string V2_API = "https://api.warframe.market/v2";
 
-// ItemDatabase struct for efficient lookups and searches
+// ==================== Item Database ====================
+// Efficient in-memory lookup tables used by both modern and legacy clients.
 struct ItemDatabase
 {
     std::unordered_map<std::string, std::string> idToSlug;      // O(1): id -> slug
