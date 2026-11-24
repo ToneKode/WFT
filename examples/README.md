@@ -13,11 +13,9 @@ Demonstrates fundamental API operations:
 
 **Usage:**
 ```bash
-# Compile
-g++ -std=c++17 basic_usage.cpp ../src/constants.cpp -I../include -lcurl -o basic_usage
-
-# Run
-./basic_usage
+# From the repo root, with the project already configured:
+cmake --build --preset mingw --target basic_usage
+./build/mingw/basic_usage
 ```
 
 ### 2. order_management.cpp
@@ -30,11 +28,9 @@ Full-featured order management application with interactive menu:
 
 **Usage:**
 ```bash
-# Compile
-g++ -std=c++17 order_management.cpp ../src/constants.cpp -I../include -lcurl -o order_management
-
-# Run
-./order_management
+# From the repo root, with the project already configured:
+cmake --build --preset mingw --target order_management
+./build/mingw/order_management
 ```
 
 ## Building with CMake

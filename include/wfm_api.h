@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 #include "http_client.h"
+#include "http_transport.h"
 #include "types.h"
 #include "constants.h"
 
@@ -72,7 +73,7 @@ private:
         }
     };
 
-    HttpClient http_client;
+    std::unique_ptr<HttpTransport> http_client;
     std::string jwt;
     std::unique_ptr<AuthState> state;
 
@@ -100,7 +101,7 @@ private:
         const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
 
         const std::string url = V2_API + "/orders/my";
-        const std::string response_body = http_client.Get(url, headers);
+        const std::string response_body = http_client->Get(url, headers);
         json data = json::parse(response_body);
 
         if (!data.contains("data") || !data["data"].is_array())
@@ -146,7 +147,7 @@ private:
 
         std::map<std::string, std::string> response_headers;
         const std::string url = V2_API + "/order/";
-        const std::string data = http_client.post(url, payload, headers, response_headers);
+        const std::string data = http_client->post(url, payload, headers, response_headers);
         json response_data = json::parse(data);
 
         if (!response_data["error"].is_null())
@@ -187,7 +188,7 @@ private:
 
         const std::string url = V2_API + "/order/" + orderId;
         std::map<std::string, std::string> response_headers;
-        const std::string data = http_client.patch(url, payload, headers, response_headers);
+        const std::string data = http_client->patch(url, payload, headers, response_headers);
         json response_data = json::parse(data);
 
         if (!response_data["error"].is_null())
@@ -205,7 +206,7 @@ private:
         const json payload = {{"quantity", quantity}};
 
         std::map<std::string, std::string> response_headers;
-        const std::string data = http_client.post(url, payload, headers, response_headers);
+        const std::string data = http_client->post(url, payload, headers, response_headers);
         json response_data = json::parse(data);
 
         if (!response_data["error"].is_null())
@@ -220,7 +221,7 @@ private:
         const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
 
         const std::string url = V2_API + "/order/" + orderId;
-        const long response_code = http_client.Delete(url, headers);
+        const long response_code = http_client->Delete(url, headers);
 
         if (response_code != 200)
         {
@@ -229,7 +230,21 @@ private:
     }
 
 public:
-    WarframeMarketAPI() : state(new UnauthenticatedState()) {}
+    WarframeMarketAPI()
+        : http_client(new HttpClient()), state(new UnauthenticatedState()) {}
+
+    /**
+     * @brief Construct with an alternate transport (tests, proxies, stubs).
+     * @param transport Non-null transport; ownership is transferred.
+     */
+    explicit WarframeMarketAPI(std::unique_ptr<HttpTransport> transport)
+        : http_client(std::move(transport)), state(new UnauthenticatedState())
+    {
+        if (!http_client)
+        {
+            throw std::invalid_argument("WarframeMarketAPI requires a transport");
+        }
+    }
 
     class AuthenticatedClient
     {
@@ -304,7 +319,7 @@ public:
 
         std::map<std::string, std::string> response_headers;
         std::string url = V1_API + "/auth/signin";
-        std::string response_body = http_client.post(url, payload, headers, response_headers);
+        std::string response_body = http_client->post(url, payload, headers, response_headers);
 
         json data = json::parse(response_body);
         std::string token = response_headers["authorization"];
@@ -358,7 +373,7 @@ public:
         std::map<std::string, std::string> headers = HeaderFactory::publicHeaders();
         headers["Content-Type"] = "application/json; utf-8";
         
-        std::string response_body = http_client.Get(url, headers);
+        std::string response_body = http_client->Get(url, headers);
         json data = json::parse(response_body);
         
         if (!data.contains("data") || !data["data"].is_array()) {

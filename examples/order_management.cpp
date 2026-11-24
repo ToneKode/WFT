@@ -120,7 +120,7 @@ void createOrder(WarframeMarketAPI& api, WarframeMarketAPI::AuthenticatedClient&
     }
 }
 
-void updateOrder(WarframeMarketAPI& api, WarframeMarketAPI::AuthenticatedClient& session)
+void updateOrder(WarframeMarketAPI::AuthenticatedClient& session)
 {
     std::cout << "\n--- Update Order ---" << std::endl;
     
@@ -301,7 +301,7 @@ int main()
                     createOrder(api, session);
                     break;
                 case 3:
-                    updateOrder(api, session);
+                    updateOrder(session);
                     break;
                 case 4:
                     closeOrder(session);

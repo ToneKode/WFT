@@ -1,0 +1,86 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 23,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "mingw",
+      "displayName": "MinGW (vcpkg x64-mingw-dynamic)",
+      "description": "Default Windows build. Requires vcpkg at VCPKG_ROOT/C:\\Users\\<you>\\vcpkg.",
+      "inherits": "base",
+      "generator": "MinGW Makefiles",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux (system curl + nlohmann_json)",
+      "description": "For CI and Linux desktops; expects libcurl-dev and nlohmann-json3-dev.",
+      "inherits": "base",
+      "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "WFT_BOOTSTRAP_VCPKG": "OFF",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "ci",
+      "displayName": "CI (release, warnings as errors)",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "WFT_WARNINGS_AS_ERRORS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "mingw",
+      "configurePreset": "mingw"
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux"
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "mingw",
+      "configurePreset": "mingw",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

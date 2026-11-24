@@ -8,10 +8,11 @@
 #include <iostream>
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
+#include "http_transport.h"
 
 using json = nlohmann::json;
 
-class HttpClient
+class HttpClient : public HttpTransport
 {
 public:
     //=======================================================http construct and destruct============================================================================================================
@@ -20,7 +21,7 @@ public:
     //=======================================================http construct and destruct============================================================================================================
 
     //=======================================================http payload methods============================================================================================================
-    std::string post(const std::string &url, const json &payload, const std::map<std::string, std::string> &headers, std::map<std::string, std::string> &response_headers)
+    std::string post(const std::string &url, const json &payload, const std::map<std::string, std::string> &headers, std::map<std::string, std::string> &response_headers) override
     {
         // Apply rate limiting
         auto now = std::chrono::steady_clock::now();
@@ -73,7 +74,7 @@ public:
         curl_easy_cleanup(curl);
         return response_body;
     }
-    std::string patch(const std::string &url, const json &payload, const std::map<std::string, std::string> &headers, std::map<std::string, std::string> &response_headers)
+    std::string patch(const std::string &url, const json &payload, const std::map<std::string, std::string> &headers, std::map<std::string, std::string> &response_headers) override
     {
         // Apply rate limiting
         auto now = std::chrono::steady_clock::now();
@@ -140,7 +141,7 @@ public:
     //=======================================================printing debugs=======================================================================================================
 
     //=======================================================http no payload methods =======================================================================================================
-    std::string Get(const std::string &url, const std::map<std::string, std::string> &headers)
+    std::string Get(const std::string &url, const std::map<std::string, std::string> &headers) override
     {
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastRequest);
@@ -189,7 +190,7 @@ public:
 
         return response;
     }
-    long Delete(const std::string &url, const std::map<std::string, std::string> &headers)
+    long Delete(const std::string &url, const std::map<std::string, std::string> &headers) override
     {
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastRequest);

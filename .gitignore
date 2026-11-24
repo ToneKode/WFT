@@ -3,6 +3,9 @@ build/
 cmake-build-*/
 out/
 
+# CMake presets write per-preset trees under build/, already ignored above.
+CMakeUserPresets.json
+
 # Compiled binaries
 *.exe
 *.dll
@@ -23,7 +26,8 @@ CMakeFiles/
 cmake_install.cmake
 compile_commands.json
 Makefile
-*.cmake
+# Only generated CMake output is ignored here. Do not add `*.cmake` — the
+# repo's own modules under cmake/ would be silently excluded from the build.
 !CMakeLists.txt
 
 # IDE and editor files
