@@ -2,18 +2,56 @@
 #include "constants.h"
 
 // ItemDatabase is the piece of the library with real logic and no I/O, so it
-// gets direct coverage: lookups, missing-key behaviour, and substring search.
+// gets direct coverage: lookups, missing-key behaviour, substring search, and
+// the metadata that order validation reads.
 
-TEST_CASE("lookup tables round-trip between id and slug")
+namespace
+{
+
+Item makeItem(const std::string &id, const std::string &slug)
+{
+    Item item;
+    item.id = id;
+    item.slug = slug;
+    return item;
+}
+
+} // namespace
+
+TEST_CASE("add() indexes an item for id and slug lookups")
 {
     ItemDatabase db;
-    db.idToSlug["54a73e65b5e5d8d3f0e7d4a6"] = "khora_prime_set";
-    db.slugToId["khora_prime_set"] = "54a73e65b5e5d8d3f0e7d4a6";
-    db.allSlugs.push_back("khora_prime_set");
+    db.add(makeItem("54a73e65b5e5d8d3f0e7d4a6", "khora_prime_set"));
 
     CHECK(db.getSlugFromId("54a73e65b5e5d8d3f0e7d4a6") == "khora_prime_set");
     CHECK(db.getIdFromSlug("khora_prime_set") == "54a73e65b5e5d8d3f0e7d4a6");
     CHECK(db.size() == 1);
+}
+
+TEST_CASE("add() of an existing slug replaces it without duplicating the slug list")
+{
+    ItemDatabase db;
+    Item item = makeItem("id-1", "khora_prime_set");
+    db.add(item);
+
+    item.hasMaxRank = true;
+    item.maxRank = 5;
+    db.add(item);
+
+    CHECK(db.size() == 1);
+    CHECK(db.getItem("khora_prime_set").maxRank == 5);
+}
+
+TEST_CASE("clear() empties every index")
+{
+    ItemDatabase db;
+    db.add(makeItem("id-1", "khora_prime_set"));
+    db.clear();
+
+    CHECK(db.size() == 0);
+    CHECK_FALSE(db.hasSlug("khora_prime_set"));
+    CHECK_FALSE(db.hasId("id-1"));
+    CHECK_THROWS_AS(db.getItem("khora_prime_set"), std::runtime_error);
 }
 
 TEST_CASE("missing keys throw rather than returning empty strings")
@@ -31,9 +69,7 @@ TEST_CASE("missing keys throw rather than returning empty strings")
 TEST_CASE("existence checks do not throw on misses")
 {
     ItemDatabase db;
-    db.slugToId["khora_prime_set"] = "id-khora";
-    db.idToSlug["id-khora"] = "khora_prime_set";
-    db.allSlugs.push_back("khora_prime_set");
+    db.add(makeItem("id-khora", "khora_prime_set"));
 
     CHECK(db.hasSlug("khora_prime_set"));
     CHECK_FALSE(db.hasSlug("nope"));
@@ -44,7 +80,9 @@ TEST_CASE("existence checks do not throw on misses")
 TEST_CASE("searchByName matches substrings and returns every hit")
 {
     ItemDatabase db;
-    db.allSlugs = {"khora_prime_set", "khora_prime_chassis_blueprint", "ash_prime_set"};
+    db.add(makeItem("id-1", "khora_prime_set"));
+    db.add(makeItem("id-2", "khora_prime_chassis_blueprint"));
+    db.add(makeItem("id-3", "ash_prime_set"));
 
     const auto prime = db.searchByName("prime");
     CHECK(prime.size() == 3);
@@ -62,6 +100,7 @@ TEST_CASE("empty search matches everything, empty database matches nothing")
     CHECK(db.searchByName("").empty());
     CHECK(db.size() == 0);
 
-    db.allSlugs = {"a", "b"};
+    db.add(makeItem("id-a", "a"));
+    db.add(makeItem("id-b", "b"));
     CHECK(db.searchByName("").size() == 2);
 }

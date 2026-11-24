@@ -47,10 +47,13 @@ fails at link time with an error that never mentions triplets — see
 | Path | Role |
 | --- | --- |
 | `include/wfm_api.h` | **Primary API.** `WarframeMarketAPI` — auth, items, orders |
-| `include/wfm_client.h` | Legacy interactive client (`WfmClient`), used by `include/user.h` |
-| `include/http_client.h` | libcurl implementation of `HttpTransport`; rate limits to 350 ms |
+| `include/order_validation.h` | Per-item order rules; `ValidationError` names the bad field |
+| `include/wfm_json.h` | v2 JSON → model mapping (`wfm_json::parseOrder`, etc.) |
+| `include/api_error.h` | v2 error envelope parsing; `ApiError` carries `request`/`inputs` codes |
+| `include/wfm_client.h` | Legacy interactive console demo over `WarframeMarketAPI` |
+| `include/http_client.h` | libcurl implementation of `HttpTransport`; 350 ms pacing, 429/509 retry |
 | `include/http_transport.h` | Transport interface; the seam that makes tests possible |
-| `include/constants.h` | `V1_API` / `V2_API` base URLs, global `itemDB` |
+| `include/constants.h` | `V1_API` / `V2_API` / `WS_API`, `WFT_USER_AGENT`, global `itemDB` |
 | `include/types.h` | Request/response models |
 | `src/constants.cpp` | Defines the global `itemDB` |
 | `tests/` | doctest suite; `tests/fake_transport.h` is the offline transport |
@@ -62,36 +65,63 @@ exercise the same code that ships.
 ## Things that will bite you
 
 - **`itemDB` is a process-wide global.** Tests that touch it call
-  `resetGlobalItemDb()` first (see `tests/test_api.cpp`). Order-dependent tests
-  will pass locally and fail in isolation — always reset.
+ `itemDB.clear()` first (see `tests/test_api.cpp`). Order-dependent tests
+ will pass locally and fail in isolation — always reset.
+- **`loadItems()` must run before orders, not just lookups.** Order request
+ validation reads each item's rank/subtype/bulk metadata, so placing an order
+ for an unloaded slug throws immediately rather than guessing the shape.
+- **`loadItems()` is all-or-nothing.** It parses into a scratch `ItemDatabase`
+ and swaps on success, so a failed reload cannot corrupt a working index.
 - **Never call the live API in a test.** Construct
-  `WarframeMarketAPI(std::unique_ptr<HttpTransport>(new FakeTransport()))` and
-  queue replies. `FakeTransport` throws immediately if a test forgets to queue
-  a reply, so a leaked network call fails fast instead of hanging.
+ `WarframeMarketAPI(std::unique_ptr<HttpTransport>(new FakeTransport()))` and
+ queue replies. `FakeTransport` throws immediately if a test forgets to queue
+ a reply, so a leaked network call fails fast instead of hanging.
 - **`FakeTransport` replies are FIFO**, one per request. A test that makes N
-  requests queues N replies.
+ requests queues N replies.
+- **Header maps are case-insensitive** (`CaseInsensitiveLess`). A
+ case-sensitive lookup misses a token the server spelled `Authorization`;
+ that bug silently produces an empty token and a confusing JWT error later.
+ Keep `HttpTransport::Headers` as the map type when adding methods.
+- **Errors live in the envelope, not the status code.** Use
+ `throwIfApiError()` and check both the nested (`error.request`) and flat
+ (`request`) shapes — the docs overview and live traffic disagree, so both
+ must work. `ApiError` carries `requestCodes()` and `inputCodes()`
+ (`"platinum=app.field.tooSmall"`).
+- **`HttpStatusError` carries the body.** The useful error code is usually in
+ the body of a 4xx, so unwrap it before reporting a bare status.
 - **Auth is a state machine** (`UnauthenticatedState`/`AuthenticatedState`).
-  Order methods go through `api.authenticated()`, which throws unless
-  `setJWT()` set a non-empty token.
+ Order methods go through `api.authenticated()`, which throws unless
+ `setJWT()` set a non-empty token.
 - **`setJWT("")` clears auth.** Use `clearJWT()` for intent.
-- **Tokens are `"JWT <token>"`.** `extractBearerToken()` throws on any other
-  shape; the header sends `Bearer <token>`.
+- **Tokens are accepted with or without the legacy `"JWT "` prefix**;
+ requests always send `Bearer <token>`. Do not reintroduce
+ `extractBearerToken()`'s old throw-on-unprefixed behaviour.
+- **`login()` targets v1 on purpose.** v2 `/auth/signin` is first-party only
+ and needs Firebase App Check; public OAuth registration is not open. Keep
+ login behind one method so the eventual OAuth swap is a single change.
 - **`http_client.h` and `wfm_client.h` define `using json = nlohmann::json;`
-  at global scope.** Including both in one translation unit is fine (identical
-  alias), but do not introduce a different `json` alias.
-- **`include/user.h` has a `WfmClient&` reference member and no default ctor.**
-  It is largely unfinished; do not build on it without cleaning it up first.
-- **`loadItems()` is required before slug↔id lookups.** Lookups on an empty
-  database throw.
+ at global scope.** Including both in one translation unit is fine (identical
+ alias), but do not introduce a different `json` alias.
+- **`include/user.h` is still unfinished** and has a `WfmClient&` reference
+ member with no default ctor. `WfmClient` now wraps `WarframeMarketAPI`, so
+ prefer the API directly rather than building on `user.h`.
+- **libcurl global init is process-wide** and must not move back into the
+ client's ctor/dtor: a second client's handles die with the first destructor.
+- **GCC `-Wdangling-reference` fires on helpers returning a reference while
+ taking a `const std::string&`.** `requireDataArray`/`requireDataObject`
+ return pointers and take `const char*` to stay clean under `-Werror`.
 
 ## Conventions
 
 - C++14. No `std::optional` in the library headers (it appears in the legacy
-  `wfm_client.h`); the request structs use `hasX` flags instead.
+ `wfm_client.h`); the request structs use `hasX` flags instead.
 - 4-space indent, braces on the same line, 100-column limit (`.clang-format`).
 - Match the existing doc-comment style (`@brief`, `@param`, `@return`) on
-  public API.
+ public API.
 - Prefer fixing a warning over suppressing it.
+- Keep `WarframeMarketAPI` about transport, auth state, and endpoint wiring.
+ JSON mapping belongs in `wfm_json.h`, request rules in `order_validation.h`,
+ and envelope handling in `api_error.h`.
 
 ## Definition of done
 

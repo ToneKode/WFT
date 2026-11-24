@@ -21,9 +21,9 @@ cmake --build --preset mingw --target basic_usage
 ### 2. order_management.cpp
 Full-featured order management application with interactive menu:
 - View all your current orders
-- Create new sell orders
+- Create new orders (buy or sell), prompting only for the fields the item needs
 - Update existing orders (price, quantity, visibility)
-- Close orders (mark as sold)
+- Close orders (partially or fully)
 - Delete orders
 
 **Usage:**
@@ -47,5 +47,7 @@ You can also build the examples using CMake. See the main project README for bui
 
 - The examples use `std::getline()` for secure password input
 - All API responses include error handling
-- Rate limiting (350ms between requests) is automatic
+- Rate limiting (350ms between requests) is automatic, with retry on 429/509
+- Order creation is validated against the item's own metadata before sending,
+  so the examples prompt only for fields the chosen item actually needs
 - Examples are designed to be educational and demonstrate best practices

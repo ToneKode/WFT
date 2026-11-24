@@ -1,451 +1,258 @@
 #ifndef WFM_CLIENT_H
 #define WFM_CLIENT_H
 
-#include <string>
-#include <optional>
+#include <cstdint>
 #include <iostream>
-#include <fstream>
-#include <limits>
+#include <map>
+#include <string>
+#include <vector>
 #include <nlohmann/json.hpp>
+#include "constants.h"
 #include "http_client.h"
 #include "types.h"
-#include "constants.h"
+#include "wfm_api.h"
 
-using json = nlohmann::json;
-
+/**
+ * @file wfm_client.h
+ * @brief Interactive console client, kept as a demo of the library.
+ *
+ * WarframeMarketAPI is the API; this class is a menu-driven front end over it.
+ * It exists so the examples have something to drive, and it is deliberately
+ * thin: all request building, validation, and parsing happens in the API and
+ * in order_validation.h.
+ *
+ * Prefer WarframeMarketAPI for anything new.
+ */
 class WfmClient
 {
-private:
-    HttpClient http_client;
-    std::string jwt;
-
 public:
-    // JWT management
-    void setJWT(std::string JWT) { jwt = JWT; }
-    std::string getJWT() { return jwt; }
+    WfmClient() : api_(new HttpClient()) {}
 
-    // Search for items by name substring
+    void setJWT(const std::string &jwt) { api_.setJWT(jwt); }
+    std::string getJWT() const { return api_.getJWT(); }
+
     std::vector<std::string> findItemsByName(const std::string &input) const
     {
-
-        auto results = itemDB.searchByName(input);
+        const auto results = api_.searchItems(input);
         if (results.empty())
         {
             std::cout << "No items found matching: " << input << "\n";
+            return results;
         }
-        else
+
+        std::cout << "Found " << results.size() << " item(s) matching '" << input << "':\n";
+        for (const auto &slug : results)
         {
-            std::cout << "Found " << results.size() << " item(s) matching '" << input << "':" << "\n";
-            for (const auto &slug : results)
-                std::cout << "  - " << slug << "\n";
+            std::cout << "  - " << slug << "\n";
         }
         return results;
     }
 
-    // Get slug from item ID
-    std::string getSlugByID(const std::string &id) const
+    std::string getSlugByID(const std::string &id) const { return api_.getSlugByID(id); }
+    std::string getIDBySlug(const std::string &slug) const { return api_.getIDBySlug(slug); }
+    const std::vector<std::string> &getAllSlugs() const { return api_.getAllSlugs(); }
+    size_t getItemCount() const { return api_.getItemCount(); }
+
+    AuthResponse login(const std::string &email, const std::string &password,
+                       const std::string &device_id)
     {
-        return itemDB.getSlugFromId(id);
+        return api_.login(email, password, device_id);
     }
 
-    // Get ID from item slug
-    std::string getIDBySlug(const std::string &slug) const
+    void loadItems()
     {
-        return itemDB.getIdFromSlug(slug);
+        const size_t count = api_.loadItems();
+        std::cout << "Loaded " << count << " items into database.\n";
     }
 
-    // Get all loaded item slugs
-    const std::vector<std::string> &getAllSlugs() const
-    {
-        return itemDB.allSlugs;
-    }
-
-    // Get number of loaded items
-    size_t getItemCount() const
-    {
-        return itemDB.size();
-    }
-
-    AuthResponse login(const std::string &username, const std::string &password, const std::string &device_id)
-    {
-        json payload = {
-            {"auth_type", "header"},
-            {"email", username},
-            {"password", password},
-            {"device_id", device_id}};
-
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Authorization", "JWT"}};
-
-        std::map<std::string, std::string> response_headers;
-        std::string url = V1_API + "/auth/signin";
-        std::string response_body = http_client.post(url, payload, headers, response_headers);
-
-        json data = json::parse(response_body);
-        std::string token = response_headers["authorization"];
-
-        AuthResponse result;
-
-        result.token = token;
-        result.user_id = data["payload"]["user"]["id"];
-        result.ingame_name = data["payload"]["user"]["ingame_name"];
-
-        return result;
-    }
-    /*
-    Item getItemStats(const std::string &itemSlug)
-    {
-        //keep for ref
-        std::map<std::string, std::string> header = {
-            {"Content-Type", "application/json; utf-8"},
-            {"Accept", "application/json"},
-            {"auth_type", "header"},
-            {"platform", "pc"},
-            {"language", "en"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-        };
-
-
-        noAuthHeader header;
-        std::string url = V1_API + "/items/" + itemSlug + "/statistics";
-        std::string response = http_client.Get(url, header);
-        json data = json::parse(response);
-
-        Item item;
-        item.slug = itemSlug;
-
-        if (data.contains("payload") && data["payload"].contains("statistics_live"))
-        {
-            auto live_stats = data["payload"]["statistics_live"]["48hours"];
-
-            if (!live_stats.empty())
-            {
-                // Get the most recent entry (index 0 is most recent)
-                double total_volume = 0.0;
-                double min_price = std::numeric_limits<double>::max();
-
-                // Get only sell volume (index 1)
-                if (live_stats.size() > 1 && live_stats[1].contains("volume"))
-                {
-                    total_volume = live_stats[1]["volume"].get<double>();
-                }
-
-                // Get minimum sell price from sell orders (second entry, index 1)
-                if (live_stats.size() > 1 && live_stats[1].contains("min_price"))
-                {
-                    min_price = live_stats[1]["min_price"].get<double>();
-                }
-
-                item.avgVolume48h = total_volume;
-                item.avgMinPrice48h = min_price;
-            }
-        }
-
-        return item;
-    }
-    */
     void myOrders()
     {
         try
         {
-            std::string auther = jwt.substr(4);
-            std::map<std::string, std::string> headers = {
-                {"Content-Type", "application/json"},
-                {"Accept", "application/json"},
-                {"User-Agent", "wf-market-cpp/0.1.0"},
-                {"Platform", "pc"},
-                {"Language", "en"},
-                {"Crossplay", "true"},
-                {"Authorization", "Bearer " + auther}};
-
-            std::string url = V2_API + "/orders/my";
-            std::string response_body = http_client.Get(url, headers);
-            json data = json::parse(response_body);
-
-            if (!data.contains("data") || !data["data"].is_array())
+            const auto orders = api_.authenticated().getMyOrders();
+            if (orders.empty())
             {
-                std::cerr << "Invalid API response format" << "\n";
+                std::cout << "No orders found.\n";
                 return;
             }
 
-            if (data["data"].empty())
+            for (const auto &order : orders)
             {
-                std::cout << "No orders found." << "\n";
-                return;
+                std::cout << "Trade ID: " << order.id << "\n"
+                          << "Type: " << order.orderType << "\n"
+                          << "Platinum: " << order.platinum << "\n"
+                          << "Quantity: " << order.quantity << "\n"
+                          << "Item: " << order.itemSlug << "\n\n";
             }
-
-            for (const auto &dat : data["data"])
-            {
-
-                std::string toSlug = dat["itemId"].get<std::string>();
-                std::string slug = getSlugByID(toSlug);
-
-                std::cout << "Trade ID: " << dat["id"].get<std::string>() << "\nType: " << dat["type"].get<std::string>() << "\nPlatinum: " << dat["platinum"].get<std::int32_t>() << "\nQuantity: " << dat["quantity"].get<std::int32_t>() << "\nItem: " << slug << "\n"
-                          << "\n";
-            }
-        }
-        catch (const json::parse_error &e)
-        {
-            std::cerr << "JSON parsing error: " << e.what() << "\n";
         }
         catch (const std::exception &e)
         {
             std::cerr << "Error fetching orders: " << e.what() << "\n";
         }
     }
-    void loadItems()
+
+    void deleteOrder(const std::string &id)
     {
-        const std::string url = V2_API + "/items";
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json; utf-8"},
-            {"Accept", "application/json"},
-            {"auth_type", "header"},
-            {"platform", "pc"},
-            {"language", "en"},
-            {"User-Agent", "wft/1.0"}};
-        std::string response_body = http_client.Get(url, headers);
-        json data = json::parse(response_body);
-        if (!data.contains("data") || !data["data"].is_array())
+        try
         {
-            std::cerr << "Invalid API response format" << "\n";
-            return;
+            api_.authenticated().deleteOrder(id);
+            std::cout << "Order with ID: " << id << " deleted.\n";
         }
-
-        if (data["data"].empty())
+        catch (const std::exception &e)
         {
-            std::cout << "API reponse malformed. Error from API:" << data["error"] << "\n";
-            return;
-        }
-        for (const auto &dat : data["data"])
-        {
-            std::string id = dat["id"].get<std::string>();
-            std::string slug = dat["slug"].get<std::string>();
-
-            itemDB.idToSlug[id] = slug;
-            itemDB.slugToId[slug] = id;
-            itemDB.allSlugs.push_back(slug);
-        }
-
-        std::cout << "Loaded " << itemDB.size() << " items into database." << "\n";
-    }
-    void deleteOrder(const std::string id)
-    {
-        std::string auther = jwt.substr(4);
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-            {"Platform", "pc"},
-            {"Language", "en"},
-            {"Crossplay", "true"},
-            {"Authorization", "Bearer " + auther}
-
-        };
-        std::string url = V2_API + "/order/" + id;
-        long response_body = http_client.Delete(url, headers);
-        if (response_body == 200)
-        {
-            std::cout << "Order with ID: " << id << " deleted." << "\n";
-        }
-        else
-        {
-            std::cerr << "No Orders with ID: " << id << "\n";
+            std::cerr << "Failed to delete order " << id << ": " << e.what() << "\n";
         }
     }
+
     void addOrderSell()
     {
-        std::string auther = jwt.substr(4);
+        std::cout << "Search for the slug you want to sell: \n";
+        std::string query;
+        std::cin >> query;
 
-        std::string url = V2_API + "/order/";
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-            {"Platform", "pc"},
-            {"Language", "en"},
-            {"Crossplay", "true"},
-            {"Authorization", "Bearer " + auther}};
-
-        std::cout << "Search for the Slug you want to sell: " << "\n";
-        std::string name;
-        std::cin >> name;
-        auto matches = findItemsByName(name);
+        const auto matches = findItemsByName(query);
         if (matches.empty())
         {
-            std::cerr << "No matching items found for: " << name << "\n";
+            std::cerr << "No matching items found for: " << query << "\n";
             return;
         }
 
-        std::string slug;
-        if (matches.size() == 1)
-        {
-            slug = matches[0];
-        }
-        else
+        std::string slug = matches[0];
+        if (matches.size() > 1)
         {
             std::cout << "Multiple matches found. Enter the slug you want to sell: ";
             std::cin >> slug;
         }
-        std::string id = slug2id(slug);
-        int plat, quantity;
-        bool visibility;
-        std::optional<int> rank;
+
+        // Only the fields the item requires are prompted for; the API layer
+        // rejects inapplicable ones, so asking for everything would be noise.
+        PlaceOrderRequest request;
+        request.itemSlug = slug;
+
         std::cout << "Enter platinum price: ";
-        std::cin >> plat;
+        std::cin >> request.platinum;
         std::cout << "Enter quantity: ";
-        std::cin >> quantity;
+        std::cin >> request.quantity;
+
+        int visible_input = 0;
         std::cout << "Set visible? (1 for true, 0 for false): ";
-        int vis_input;
-        std::cin >> vis_input;
-        visibility = (vis_input != 0);
-        std::cout << "Enter rank (or leave empty to skip): ";
-        std::string rank_input;
-        std::getline(std::cin, rank_input);
-        if (!rank_input.empty())
-            rank = std::stoi(rank_input);
-        json payload = {
-            {"itemId", id},
-            {"type", "sell"},
-            {"platinum", plat},
-            {"quantity", quantity},
-            {"visible", visibility}};
-        if (rank.has_value())
+        std::cin >> visible_input;
+        request.visible = (visible_input != 0);
+
+        try
         {
-            payload["rank"] = rank.value();
+            const Item &item = api_.getItem(slug);
+            if (item.requiresRank())
+            {
+                std::cout << "Enter rank (0-" << item.maxRank << "): ";
+                std::cin >> request.rank;
+                request.hasRank = true;
+            }
+            if (item.requiresSubtype())
+            {
+                std::cout << "Enter subtype (";
+                for (size_t i = 0; i < item.subtypes.size(); ++i)
+                {
+                    std::cout << (i ? ", " : "") << item.subtypes[i];
+                }
+                std::cout << "): ";
+                std::cin >> request.subtype;
+                request.hasSubtype = true;
+            }
+            if (item.requiresPerTrade())
+            {
+                std::cout << "Enter perTrade (1-6): ";
+                std::cin >> request.perTrade;
+                request.hasPerTrade = true;
+            }
+            if (item.hasMaxAmberStars && item.maxAmberStars > 0)
+            {
+                std::cout << "Enter amber stars (0-" << item.maxAmberStars << "): ";
+                std::cin >> request.amberStars;
+                request.hasAmberStars = true;
+            }
+            if (item.hasMaxCyanStars && item.maxCyanStars > 0)
+            {
+                std::cout << "Enter cyan stars (0-" << item.maxCyanStars << "): ";
+                std::cin >> request.cyanStars;
+                request.hasCyanStars = true;
+            }
+
+            const std::string orderId = api_.authenticated().placeOrder(request);
+            std::cout << "Order created: " << orderId << "\n";
         }
-        std::map<std::string, std::string> response_headers;
-        std::string data = http_client.post(url, payload, headers, response_headers);
-        json response_data = json::parse(data);
-        if (response_data["error"].is_null())
+        catch (const std::exception &e)
         {
-            std::cout << "Order created." << "\n";
-        }
-        else
-        {
-            std::cout << response_data["error"].get<std::string>() << "\n";
+            std::cerr << "Failed to create order: " << e.what() << "\n";
         }
     }
-    void closeOrder(const int amt)
+
+    void closeOrder(const int amount)
     {
-        std::string auther = jwt.substr(4);
-
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-            {"Platform", "pc"},
-            {"Language", "en"},
-            {"Crossplay", "true"},
-            {"Authorization", "Bearer " + auther}};
-
         myOrders();
-        std::cout << "Which would u like to close? " << "\n";
+        std::cout << "Which would you like to close? \n";
         std::string id;
         std::cin >> id;
 
-        std::string url = V2_API + "/order/" + id + "/close";
-        json payload = {
-            {"quantity", amt}};
-        std::map<std::string, std::string> response_headers;
-        std::string data = http_client.post(url, payload, headers, response_headers);
-        json response_data = json::parse(data);
-        if (response_data["error"].is_null())
+        try
         {
-            std::cout << "You have closed " << amt << " order(s):" << "\n";
+            const Transaction tx = api_.authenticated().closeOrder(id, amount);
+            std::cout << "Closed " << amount << " unit(s); transaction " << tx.id << "\n";
         }
-        else
+        catch (const std::exception &e)
         {
-            std::cout << "Error wfm response: " << response_data["error"].get<std::string>() << "\n";
+            std::cerr << "Error closing order: " << e.what() << "\n";
         }
     }
+
     void patchOrder()
     {
-        std::string auther = jwt.substr(4);
-        std::map<std::string, std::string> headers = {
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"},
-            {"User-Agent", "wf-market-cpp/0.1.0"},
-            {"Platform", "pc"},
-            {"Language", "en"},
-            {"Crossplay", "true"},
-            {"Authorization", "Bearer " + auther}};
         myOrders();
-        std::cout << "Copy the order: " << "\n";
+        std::cout << "Copy the order id: \n";
         std::string orderId;
         std::cin >> orderId;
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n'); // Clear input buffer
-        std::optional<int> plat = std::nullopt;
-        std::optional<int> quantity = std::nullopt;
-        std::optional<int> rank = std::nullopt;
-        std::optional<bool> visibility = std::nullopt;
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
+        UpdateOrderRequest request;
         std::string input;
+
         std::cout << "Enter platinum price (or leave empty to skip): ";
         std::getline(std::cin, input);
         if (!input.empty())
-            plat = std::stoi(input);
+        {
+            request.hasPlatinum = true;
+            request.platinum = std::stoi(input);
+        }
 
         std::cout << "Enter quantity (or leave empty to skip): ";
         std::getline(std::cin, input);
         if (!input.empty())
-            quantity = std::stoi(input);
+        {
+            request.hasQuantity = true;
+            request.quantity = std::stoi(input);
+        }
 
-        std::cout << "Enter rank (or leave empty to skip): ";
+        std::cout << "Set visible? (1/0 or leave empty to skip): ";
         std::getline(std::cin, input);
         if (!input.empty())
-            rank = std::stoi(input);
-
-        std::cout << "Set visible? (1 for true, 0 for false, or leave empty to skip): ";
-        std::getline(std::cin, input);
-        if (!input.empty())
-            visibility = (std::stoi(input) != 0);
-
-        if (!plat.has_value() && !quantity.has_value() && !visibility.has_value() && !rank.has_value())
         {
-            std::cerr << "No fields provided to update." << "\n";
-            return;
+            request.hasVisible = true;
+            request.visible = (std::stoi(input) != 0);
         }
 
-        std::string url = V2_API + "/order/" + orderId;
-
-        json payload;
-        if (plat.has_value())
+        try
         {
-            payload["platinum"] = plat.value();
+            api_.authenticated().updateOrder(orderId, request);
+            std::cout << "Order updated.\n";
         }
-        if (quantity.has_value())
+        catch (const std::exception &e)
         {
-            payload["quantity"] = quantity.value();
-        }
-        if (visibility.has_value())
-        {
-            payload["visible"] = visibility.value();
-        }
-        if (rank.has_value())
-        {
-            payload["rank"] = rank.value();
-        }
-
-        std::map<std::string, std::string> response_headers;
-
-        std::string data = http_client.patch(url, payload, headers, response_headers);
-        json response_data = json::parse(data);
-        if (response_data["error"].is_null())
-        {
-            std::cout << "Order updated." << "\n";
-        }
-        else
-        {
-            std::cout << "Error wfm response: " << response_data["error"].get<std::string>() << "\n";
+            std::cerr << "Error updating order: " << e.what() << "\n";
         }
     }
 
 private:
-    std::string slug2id(const std::string &slug)
-    {
-        return itemDB.getIdFromSlug(slug);
-    }
+    WarframeMarketAPI api_;
 };
 
 #endif // WFM_CLIENT_H

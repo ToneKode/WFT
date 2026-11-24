@@ -1,22 +1,43 @@
 #ifndef WFM_API_H
 #define WFM_API_H
 
-#include <string>
-#include <vector>
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <vector>
 #include <nlohmann/json.hpp>
+#include "api_error.h"
+#include "constants.h"
 #include "http_client.h"
 #include "http_transport.h"
+#include "order_validation.h"
 #include "types.h"
-#include "constants.h"
+#include "wfm_json.h"
 
-using json = nlohmann::json;
-
+/**
+ * @file wfm_api.h
+ * @brief Main entry point for the Warframe.Market API client.
+ *
+ * The v2 API is the supported surface: v1 REST data endpoints are gone, and
+ * v2 rejects requests that do not match an item's metadata. Order calls
+ * therefore validate against the loaded item database before sending, so a
+ * malformed request fails locally with a useful message instead of costing a
+ * round trip and returning a terse error code.
+ *
+ * Everything here runs offline against a substituted HttpTransport, which is
+ * how the test suite covers request/parse behaviour without credentials.
+ */
 class WarframeMarketAPI
 {
 private:
+    /**
+     * @brief Auth state.
+     *
+     * Kept as an explicit state object so that order methods can be refused
+     * before any transport work happens, rather than failing with a 401 that
+     * looks like a server problem.
+     */
     class AuthState
     {
     public:
@@ -36,196 +57,257 @@ private:
         bool isAuthenticated() const override { return true; }
     };
 
+    /**
+     * @brief Builds request headers.
+     *
+     * The `User-Agent` identifies this library because the API rules require
+     * clients to be identifiable, and `Platform`/`Crossplay` are needed for
+     * the endpoints whose results depend on the marketplace shard.
+     */
     struct HeaderFactory
     {
-        static std::map<std::string, std::string> commonJsonHeaders()
+        static std::string userAgent()
         {
-            return {
-                {"Content-Type", "application/json"},
-                {"Accept", "application/json"},
-                {"User-Agent", "wf-market-cpp/0.1.0"},
-                {"Platform", "pc"},
-                {"Language", "en"},
-                {"Crossplay", "true"}
-            };
+            return WFT_USER_AGENT;
         }
 
-        static std::map<std::string, std::string> loginHeaders()
+        static std::map<std::string, std::string, CaseInsensitiveLess> commonHeaders()
         {
-            return {
-                {"Content-Type", "application/json"},
-                {"Authorization", "JWT"}
-            };
-        }
-
-        static std::map<std::string, std::string> publicHeaders()
-        {
-            std::map<std::string, std::string> headers = commonJsonHeaders();
-            headers["auth_type"] = "header";
+            std::map<std::string, std::string, CaseInsensitiveLess> headers;
+            headers["Content-Type"] = "application/json";
+            headers["Accept"] = "application/json";
+            headers["User-Agent"] = userAgent();
+            headers["Platform"] = "pc";
+            headers["Crossplay"] = "true";
             return headers;
         }
 
-        static std::map<std::string, std::string> authHeaders(const std::string &bearerToken)
+        static std::map<std::string, std::string, CaseInsensitiveLess> publicHeaders()
         {
-            std::map<std::string, std::string> headers = commonJsonHeaders();
-            headers["Authorization"] = "Bearer " + bearerToken;
+            return commonHeaders();
+        }
+
+        static std::map<std::string, std::string, CaseInsensitiveLess>
+        authHeaders(const std::string &accessToken)
+        {
+            auto headers = commonHeaders();
+            headers["Authorization"] = "Bearer " + accessToken;
             return headers;
         }
     };
 
     std::unique_ptr<HttpTransport> http_client;
-    std::string jwt;
+    std::string accessToken;
     std::unique_ptr<AuthState> state;
-
-    std::string extractBearerToken() const
-    {
-        const std::string prefix = "JWT ";
-        if (jwt.size() <= prefix.size() || jwt.compare(0, prefix.size(), prefix) != 0)
-        {
-            throw std::runtime_error("Invalid JWT format. Expected token with 'JWT ' prefix.");
-        }
-        return jwt.substr(prefix.size());
-    }
+    std::string platform = "pc";
+    std::string language = "en";
 
     void ensureAuthenticated() const
     {
         if (!state || !state->isAuthenticated())
         {
-            throw std::runtime_error("Authentication required. Call login() and setJWT() first.");
+            throw std::runtime_error(
+                "Authentication required. Call login() or setJWT() first.");
         }
     }
 
-    std::vector<OrderDetail> getMyOrdersImpl()
+    /// Convert the stored token to the header form, tolerating a "JWT " prefix.
+    std::string bearerToken() const
     {
-        const std::string auther = extractBearerToken();
-        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
-
-        const std::string url = V2_API + "/orders/my";
-        const std::string response_body = http_client->Get(url, headers);
-        json data = json::parse(response_body);
-
-        if (!data.contains("data") || !data["data"].is_array())
+        if (accessToken.empty())
         {
-            throw std::runtime_error("Invalid API response format");
+            throw std::runtime_error("No access token set");
         }
 
-        std::vector<OrderDetail> orders;
-        for (const auto &dat : data["data"])
+        // Tokens handed to setJWT() may still carry the legacy "JWT " prefix.
+        static const std::string legacy_prefix = "JWT ";
+        if (accessToken.compare(0, legacy_prefix.size(), legacy_prefix) == 0)
         {
-            OrderDetail order;
-            order.id = dat["id"].get<std::string>();
-            order.orderType = dat["type"].get<std::string>();
-            order.platinum = dat["platinum"].get<int>();
-            order.quantity = dat["quantity"].get<int>();
-            order.itemId = dat["itemId"].get<std::string>();
-            order.itemSlug = getSlugByID(order.itemId);
-            order.visible = dat.value("visible", true);
+            return accessToken.substr(legacy_prefix.size());
+        }
+        return accessToken;
+    }
+
+    /// Headers for the marketplace-affecting endpoints.
+    HttpTransport::Headers contextHeaders() const
+    {
+        auto headers = HeaderFactory::commonHeaders();
+        headers["Platform"] = platform;
+        headers["Language"] = language;
+        return headers;
+    }
+
+    // ==================== Request plumbing ====================
+
+    /**
+     * @brief Read a response body and surface documented API errors.
+     *
+     * v2 reports failures inside the envelope rather than through the status
+     * code alone, so parsing happens even on success. Transport failures are
+     * unwrapped here too: the body of an HttpStatusError usually holds the
+     * actionable code (`app.errors.unauthorized`, `app.item.notFound`).
+     */
+    json parseResponse(const std::string &body, const std::string &context)
+    {
+        json root;
+        try
+        {
+            root = json::parse(body);
+        }
+        catch (const json::parse_error &)
+        {
+            throw std::runtime_error(context + ": response was not valid JSON");
+        }
+        throwIfApiError(root, context);
+        return root;
+    }
+
+    json request(const std::string &method, const std::string &url,
+                 const json &payload, const HttpTransport::Headers &headers,
+                 const std::string &context)
+    {
+        std::string body;
+        HttpTransport::Headers response_headers;
+        try
+        {
+            if (method == "GET")
+            {
+                body = http_client->Get(url, headers);
+            }
+            else if (method == "PATCH")
+            {
+                body = http_client->patch(url, payload, headers, response_headers);
+            }
+            else
+            {
+                body = http_client->post(url, payload, headers, response_headers);
+            }
+        }
+        catch (const HttpStatusError &error)
+        {
+            // The status says "failed"; the body says why. Prefer the body.
+            try
+            {
+                throwIfApiError(json::parse(error.body()), context);
+            }
+            catch (const ApiError &)
+            {
+                throw;
+            }
+            catch (const json::parse_error &)
+            {
+                // Fall through to the status-based message below.
+            }
+            throw std::runtime_error(context + ": HTTP " + std::to_string(error.status()));
+        }
+
+        return parseResponse(body, context);
+    }
+
+    // ==================== Order implementation ====================
+
+    std::vector<Order> getMyOrdersImpl()
+    {
+        const std::string url = V2_API + "/orders/my";
+        const json root = request("GET", url, json(), HeaderFactory::authHeaders(bearerToken()),
+                                  "Failed to list orders");
+        return toOrders(*wfm_json::requireDataArray(root, "Failed to list orders"));
+    }
+
+    /// Map order JSON to models, resolving item slugs through the item database.
+    std::vector<Order> toOrders(const json &array) const
+    {
+        std::vector<Order> orders;
+        orders.reserve(array.size());
+        for (const auto &entry : array)
+        {
+            Order order = wfm_json::parseOrder(entry);
+            if (!order.itemId.empty() && itemDB.hasId(order.itemId))
+            {
+                order.itemSlug = itemDB.getSlugFromId(order.itemId);
+            }
             orders.push_back(order);
         }
-
         return orders;
     }
 
-    std::string createSellOrderImpl(const SellOrderRequest &request)
+    std::string placeOrderImpl(const PlaceOrderRequest &request_data)
     {
-        const std::string auther = extractBearerToken();
-        const std::string itemId = getIDBySlug(request.itemSlug);
-        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
-
-        json payload = {
-            {"itemId", itemId},
-            {"type", "sell"},
-            {"platinum", request.platinum},
-            {"quantity", request.quantity},
-            {"visible", request.visible}
-        };
-
-        if (request.hasRank)
+        // Refuse locally when the item is unknown: without its metadata the
+        // request cannot be checked, and guessing would send a bad body.
+        if (!itemDB.hasSlug(request_data.itemSlug))
         {
-            payload["rank"] = request.rank;
+            throw std::invalid_argument(
+                "Unknown item slug: " + request_data.itemSlug +
+                ". Call loadItems() before placing orders.");
         }
 
-        std::map<std::string, std::string> response_headers;
-        const std::string url = V2_API + "/order/";
-        const std::string data = http_client->post(url, payload, headers, response_headers);
-        json response_data = json::parse(data);
+        const Item &item = itemDB.getItem(request_data.itemSlug);
+        order_validation::validateAgainst(request_data, item);
 
-        if (!response_data["error"].is_null())
+        const json payload =
+            order_validation::buildPayload(request_data, item.id);
+        const std::string url = V2_API + "/order";
+        const json root = request("POST", url, payload,
+                                 HeaderFactory::authHeaders(bearerToken()),
+                                 "Failed to create order");
+
+        const json &data = *wfm_json::requireDataObject(root, "Failed to create order");
+        if (!wfm_json::hasKey(data, "id"))
         {
-            throw std::runtime_error("API error: " + response_data["error"].get<std::string>());
+            throw std::runtime_error("Failed to create order: response had no id");
         }
-
-        return response_data["data"]["id"].get<std::string>();
+        return data.at("id").get<std::string>();
     }
 
-    void updateOrderImpl(const std::string &orderId, const UpdateOrderRequest &request)
+    Order updateOrderImpl(const std::string &orderId, const UpdateOrderRequest &request_data)
     {
-        if (!request.hasChanges())
+        if (!request_data.hasChanges())
         {
             throw std::invalid_argument("No fields provided to update");
         }
 
-        const std::string auther = extractBearerToken();
-        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
-
-        json payload;
-        if (request.hasPlatinum)
-        {
-            payload["platinum"] = request.platinum;
-        }
-        if (request.hasQuantity)
-        {
-            payload["quantity"] = request.quantity;
-        }
-        if (request.hasVisible)
-        {
-            payload["visible"] = request.visible;
-        }
-        if (request.hasRank)
-        {
-            payload["rank"] = request.rank;
-        }
-
+        const json payload = order_validation::buildPatchPayload(request_data);
         const std::string url = V2_API + "/order/" + orderId;
-        std::map<std::string, std::string> response_headers;
-        const std::string data = http_client->patch(url, payload, headers, response_headers);
-        json response_data = json::parse(data);
+        const json root = request("PATCH", url, payload,
+                                 HeaderFactory::authHeaders(bearerToken()),
+                                 "Failed to update order");
 
-        if (!response_data["error"].is_null())
-        {
-            throw std::runtime_error("API error: " + response_data["error"].get<std::string>());
-        }
+        const json &data = *wfm_json::requireDataObject(root, "Failed to update order");
+        return wfm_json::parseOrder(data);
     }
 
-    void closeOrderImpl(const std::string &orderId, int quantity)
+    Transaction closeOrderImpl(const std::string &orderId, int quantity)
     {
-        const std::string auther = extractBearerToken();
-        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
-
-        const std::string url = V2_API + "/order/" + orderId + "/close";
-        const json payload = {{"quantity", quantity}};
-
-        std::map<std::string, std::string> response_headers;
-        const std::string data = http_client->post(url, payload, headers, response_headers);
-        json response_data = json::parse(data);
-
-        if (!response_data["error"].is_null())
+        if (quantity < 1)
         {
-            throw std::runtime_error("API error: " + response_data["error"].get<std::string>());
+            throw std::invalid_argument("quantity: must be at least 1");
         }
+
+        const json payload = {{"quantity", quantity}};
+        const std::string url = V2_API + "/order/" + orderId + "/close";
+        const json root = request("POST", url, payload,
+                                 HeaderFactory::authHeaders(bearerToken()),
+                                 "Failed to close order");
+
+        const json &data = *wfm_json::requireDataObject(root, "Failed to close order");
+        return wfm_json::parseTransaction(data);
     }
 
+    /**
+     * @brief Delete an order.
+     *
+     * The endpoint returns the deleted order, but HttpTransport::Delete
+     * reports only the status, so the response body is not available here.
+     * Callers that need the deleted order should capture it beforehand.
+     */
     void deleteOrderImpl(const std::string &orderId)
     {
-        const std::string auther = extractBearerToken();
-        const std::map<std::string, std::string> headers = HeaderFactory::authHeaders(auther);
-
         const std::string url = V2_API + "/order/" + orderId;
-        const long response_code = http_client->Delete(url, headers);
-
-        if (response_code != 200)
+        const long status = http_client->Delete(url, HeaderFactory::authHeaders(bearerToken()));
+        if (status < 200 || status >= 300)
         {
-            throw std::runtime_error("Failed to delete order: HTTP " + std::to_string(response_code));
+            throw std::runtime_error("Failed to delete order: HTTP " + std::to_string(status));
         }
     }
 
@@ -246,43 +328,70 @@ public:
         }
     }
 
+    /**
+     * @brief Set the marketplace platform and localization used by new requests.
+     * @param newPlatform One of pc, ps4, xbox, switch, mobile.
+     * @param newLanguage One of the documented language codes, e.g. "en".
+     */
+    void setPlatform(const std::string &newPlatform, const std::string &newLanguage = "en")
+    {
+        platform = newPlatform;
+        language = newLanguage;
+    }
+
+    const std::string &getPlatform() const { return platform; }
+    const std::string &getLanguage() const { return language; }
+
+    /**
+     * @brief Order operations, only reachable on an authenticated client.
+     *
+     * Obtained from `WarframeMarketAPI::authenticated()`, which refuses to
+     * return one until a token is set.
+     */
     class AuthenticatedClient
     {
     public:
         explicit AuthenticatedClient(WarframeMarketAPI &apiRef) : api(apiRef) {}
 
-        std::vector<OrderDetail> getMyOrders()
+        std::vector<Order> getMyOrders()
         {
             api.ensureAuthenticated();
             return api.getMyOrdersImpl();
         }
 
-        std::string createSellOrder(const SellOrderRequest &request)
+        std::string placeOrder(const PlaceOrderRequest &request)
         {
             api.ensureAuthenticated();
-            return api.createSellOrderImpl(request);
+            return api.placeOrderImpl(request);
         }
 
-        std::string createSellOrder(const std::string &itemSlug, int platinum, int quantity, bool visible)
+        /**
+         * @brief Convenience overload for the simple, non-ranked case.
+         *
+         * Rejects items that need rank, charges, subtype, stars, or perTrade;
+         * use the struct overload for those.
+         */
+        std::string placeOrder(const std::string &itemSlug, int platinum, int quantity,
+                               bool visible)
         {
-            SellOrderRequest request;
+            PlaceOrderRequest request;
             request.itemSlug = itemSlug;
             request.platinum = platinum;
             request.quantity = quantity;
             request.visible = visible;
-            return createSellOrder(request);
+            return placeOrder(request);
         }
 
-        void updateOrder(const std::string &orderId, const UpdateOrderRequest &request)
+        Order updateOrder(const std::string &orderId, const UpdateOrderRequest &request)
         {
             api.ensureAuthenticated();
-            api.updateOrderImpl(orderId, request);
+            return api.updateOrderImpl(orderId, request);
         }
 
-        void closeOrder(const std::string &orderId, int quantity)
+        Transaction closeOrder(const std::string &orderId, int quantity)
         {
             api.ensureAuthenticated();
-            api.closeOrderImpl(orderId, quantity);
+            return api.closeOrderImpl(orderId, quantity);
         }
 
         void deleteOrder(const std::string &orderId)
@@ -295,48 +404,104 @@ public:
         WarframeMarketAPI &api;
     };
 
-public:
     // ==================== Authentication ====================
-    
+
     /**
-     * @brief Authenticate with Warframe.Market
-     * @param email User email
-     * @param password User password
-     * @param device_id Optional device ID
-     * @return AuthResponse containing token and user info
+     * @brief Authenticate against the legacy v1 session endpoint.
+     *
+     * v2 `/auth/signin` is first-party only and requires Firebase App Check,
+     * and public OAuth client registration is not open yet, so the v1
+     * endpoint is the only path available to third-party clients. OAuth is
+     * planned to replace it; this method is the seam that will change.
+     *
+     * @param email Account email.
+     * @param password Account password.
+     * @param device_id Optional device identifier bound to the session.
+     * @param device_name Optional human-readable device name.
+     * @return The access token and basic user info.
      */
-    AuthResponse login(const std::string& email, const std::string& password, 
-                       const std::string& device_id = "")
+    AuthResponse login(const std::string &email, const std::string &password,
+                       const std::string &device_id = "",
+                       const std::string &device_name = "wft-cpp")
     {
         json payload = {
             {"auth_type", "header"},
             {"email", email},
-            {"password", password},
-            {"device_id", device_id}
-        };
+            {"password", password}};
 
-        std::map<std::string, std::string> headers = HeaderFactory::loginHeaders();
+        if (!device_id.empty())
+        {
+            payload["device_id"] = device_id;
+        }
+        if (!device_name.empty())
+        {
+            payload["device_name"] = device_name;
+        }
 
-        std::map<std::string, std::string> response_headers;
-        std::string url = V1_API + "/auth/signin";
-        std::string response_body = http_client->post(url, payload, headers, response_headers);
+        HttpTransport::Headers headers;
+        headers["Content-Type"] = "application/json";
+        headers["Accept"] = "application/json";
+        headers["User-Agent"] = HeaderFactory::userAgent();
+        headers["Authorization"] = "JWT";
 
-        json data = json::parse(response_body);
-        std::string token = response_headers["authorization"];
+        const std::string url = V1_API + "/auth/signin";
+
+        std::string body;
+        HttpTransport::Headers response_headers;
+        try
+        {
+            body = http_client->post(url, payload, headers, response_headers);
+        }
+        catch (const HttpStatusError &error)
+        {
+            throw std::runtime_error("Login failed: HTTP " +
+                                     std::to_string(error.status()));
+        }
+
+        json root = json::parse(body);
 
         AuthResponse result;
-        result.token = token;
-        result.user_id = data["payload"]["user"]["id"];
-        result.ingame_name = data["payload"]["user"]["ingame_name"];
+
+        // The token is returned in the response header, whose name is
+        // case-insensitive: the response header map is keyed that way so this
+        // lookup cannot silently miss.
+        auto token_it = response_headers.find("authorization");
+        if (token_it != response_headers.end())
+        {
+            result.token = token_it->second;
+        }
+
+        if (wfm_json::hasKey(root, "payload") && root.at("payload").is_object() &&
+            root.at("payload").contains("user") && root.at("payload").at("user").is_object())
+        {
+            const json &user = root.at("payload").at("user");
+            if (wfm_json::hasKey(user, "id"))
+            {
+                result.user_id = user.at("id").get<std::string>();
+            }
+            if (wfm_json::hasKey(user, "ingame_name"))
+            {
+                result.ingame_name = user.at("ingame_name").get<std::string>();
+            }
+        }
+
+        if (result.token.empty())
+        {
+            throw std::runtime_error("Login failed: no token in response");
+        }
 
         return result;
     }
-    
 
-    void setJWT(const std::string& token)
+    /**
+     * @brief Set the access token directly, for callers that already have one.
+     *
+     * Accepts the token with or without the legacy `JWT ` prefix.
+     */
+    void setJWT(const std::string &token)
     {
-        jwt = token;
-        if (jwt.empty())
+        accessToken = token;
+        if (accessToken.empty())
         {
             state.reset(new UnauthenticatedState());
         }
@@ -348,13 +513,17 @@ public:
 
     void clearJWT()
     {
-        jwt.clear();
+        accessToken.clear();
         state.reset(new UnauthenticatedState());
     }
 
-    std::string getJWT() const { return jwt; }
+    std::string getJWT() const { return accessToken; }
     bool isAuthenticated() const { return state && state->isAuthenticated(); }
 
+    /**
+     * @brief Order-operation facade for an authenticated client.
+     * @throws std::runtime_error when no token is set.
+     */
     AuthenticatedClient authenticated()
     {
         ensureAuthenticated();
@@ -362,68 +531,80 @@ public:
     }
 
     // ==================== Item Database ====================
-    
+
     /**
-     * @brief Load all tradeable items from Warframe.Market
-     * @return Number of items loaded
+     * @brief Load every tradable item, replacing anything already loaded.
+     *
+     * The full item model is retained because order validation needs each
+     * item's rank, subtype, bulk-trading, and star metadata.
+     *
+     * @return Number of items loaded.
+     * @throws std::runtime_error on an empty or malformed response.
      */
     size_t loadItems()
     {
         const std::string url = V2_API + "/items";
-        std::map<std::string, std::string> headers = HeaderFactory::publicHeaders();
-        headers["Content-Type"] = "application/json; utf-8";
-        
-        std::string response_body = http_client->Get(url, headers);
-        json data = json::parse(response_body);
-        
-        if (!data.contains("data") || !data["data"].is_array()) {
-            throw std::runtime_error("Invalid API response format");
+        const json root = request("GET", url, json(), contextHeaders(),
+                                  "Failed to load items");
+        const json &data = *wfm_json::requireDataArray(root, "Failed to load items");
+
+        if (data.empty())
+        {
+            throw std::runtime_error("Failed to load items: API response contains no items");
         }
-        
-        if (data["data"].empty()) {
-            throw std::runtime_error("API response contains no items");
+
+        ItemDatabase loaded;
+        for (const auto &entry : data)
+        {
+            loaded.add(wfm_json::parseItem(entry));
         }
-        
-        for (const auto& dat : data["data"]) {
-            std::string id = dat["id"].get<std::string>();
-            std::string slug = dat["slug"].get<std::string>();
-            
-            itemDB.idToSlug[id] = slug;
-            itemDB.slugToId[slug] = id;
-            itemDB.allSlugs.push_back(slug);
-        }
-        
+
+        // Swap in only after a full successful parse, so a mid-parse failure
+        // leaves the existing index intact.
+        itemDB = loaded;
         return itemDB.size();
     }
-    
+
     /**
-     * @brief Search for items by name substring
-     * @param query Search query
-     * @return Vector of matching item slugs
+     * @brief Search loaded items by substring.
+     * @param query Substring matched against slugs.
      */
-    std::vector<std::string> searchItems(const std::string& query) const
+    std::vector<std::string> searchItems(const std::string &query) const
     {
         return itemDB.searchByName(query);
     }
-    
 
-    std::string getSlugByID(const std::string& id) const
+    /**
+     * @brief Resolve an item id to its slug.
+     * @throws std::runtime_error when the id is not loaded.
+     */
+    std::string getSlugByID(const std::string &id) const
     {
         return itemDB.getSlugFromId(id);
     }
-    
 
-    std::string getIDBySlug(const std::string& slug) const
+    /**
+     * @brief Resolve an item slug to its id.
+     * @throws std::runtime_error when the slug is not loaded.
+     */
+    std::string getIDBySlug(const std::string &slug) const
     {
         return itemDB.getIdFromSlug(slug);
     }
-    
 
-    const std::vector<std::string>& getAllSlugs() const
+    /**
+     * @brief Full metadata for a loaded item.
+     * @throws std::runtime_error when the slug is not loaded.
+     */
+    const Item &getItem(const std::string &slug) const
+    {
+        return itemDB.getItem(slug);
+    }
+
+    const std::vector<std::string> &getAllSlugs() const
     {
         return itemDB.allSlugs;
     }
-    
 
     size_t getItemCount() const
     {

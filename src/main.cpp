@@ -3,6 +3,7 @@
  * @brief Simple demonstration of the Warframe Market API client
  */
 
+#include <algorithm>
 #include <iostream>
 #include "../include/wfm_api.h"
 
