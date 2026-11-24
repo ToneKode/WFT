@@ -1,6 +1,8 @@
 #ifndef MARKET_API_H
 #define MARKET_API_H
 
+#include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -149,6 +151,53 @@ public:
         std::vector<Order> sell;
         std::vector<Order> buy;
     };
+
+    /**
+     * @brief Cheapest sell orders for one item, for `bestSells()` results.
+     *
+     * `sells` is normalised per unit already: `Order::platinumPerUnit()` is the
+     * comparable number, not `Order::platinum`.
+     */
+    struct ItemListings
+    {
+        std::string itemSlug;
+        std::vector<Order> sells;
+    };
+
+    /**
+     * @brief Best sell listings across several items, cheapest per unit first.
+     *
+     * One request per slug, paced by the transport's shared rate limiter, so a
+     * wide batch is slow rather than throttled. Duplicate slugs are fetched
+     * twice; pass a unique list.
+     *
+     * @param slugs Item slugs to price.
+     * @param limit Maximum listings to keep per item; 0 keeps all of them.
+     * @return One entry per slug, in the order given. An item with no sell
+     *         orders yields an entry with an empty `sells`.
+     * @throws ApiError when a request fails; the batch stops rather than
+     *         returning partial results that look complete.
+     *
+     * Prefer `topOrdersForItem()` for Endo and Ayatan star items, whose ranking
+     * has server-side rules `OrderBook` does not replicate.
+     */
+    std::vector<ItemListings> bestSells(const std::vector<std::string> &slugs, size_t limit = 5)
+    {
+        std::vector<ItemListings> listings;
+        listings.reserve(slugs.size());
+        for (const auto &slug : slugs)
+        {
+            const OrderBook book = bookForItem(slug);
+
+            ItemListings entry;
+            entry.itemSlug = slug;
+            const std::vector<Order> &sells = book.sells();
+            const size_t keep = (limit == 0) ? sells.size() : (std::min)(limit, sells.size());
+            entry.sells.assign(sells.begin(), sells.begin() + static_cast<std::ptrdiff_t>(keep));
+            listings.push_back(std::move(entry));
+        }
+        return listings;
+    }
 
     /**
      * @brief The server's own top orders for an item.

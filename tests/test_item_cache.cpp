@@ -53,6 +53,19 @@ nlohmann::json cachedItemJson(const std::string &slug, int maxRank)
             {"i18n", {{"en", {{"name", "Name of " + slug}}}}}};
 }
 
+/// An online-visible order, in the shape `/orders/item/{slug}` returns.
+nlohmann::json orderJsonLike(const std::string &id, const std::string &type, int platinum,
+                             int quantity, int perTrade)
+{
+    return {{"id", id},
+            {"type", type},
+            {"platinum", platinum},
+            {"quantity", quantity},
+            {"perTrade", perTrade},
+            {"visible", true},
+            {"user", {{"id", "u1"}, {"status", "ingame"}}}};
+}
+
 } // namespace
 
 TEST_CASE("versions() exposes the items hash and updatedAt")
@@ -181,3 +194,66 @@ TEST_CASE("a cache entry missing id or slug names the cache file")
     removeFile(path);
 }
 
+TEST_CASE("bestSells ranks per unit across several items with one request each")
+{
+    FakeTransport *fake = nullptr;
+    MarketAPI api(makeTransport(fake));
+
+    // khora: 36 plat for 6 units is 6 per unit, so it beats a 20-plat single.
+    // Sorting on raw `platinum` would have put the bundle last: that is the bug
+    // this ranking exists to avoid.
+    fake->queueJson({{"data", nlohmann::json::array({orderJsonLike("single", "sell", 20, 1, 1),
+                                                     orderJsonLike("bundle", "sell", 36, 6, 6)})},
+                     {"error", nullptr}});
+    fake->queueJson({{"data", nlohmann::json::array({orderJsonLike("only", "sell", 30, 6, 6),
+                                                     orderJsonLike("buy", "buy", 99, 1, 1)})},
+                     {"error", nullptr}});
+
+    const std::vector<MarketAPI::ItemListings> listings =
+        api.bestSells({"khora_prime_set", "axi_a1_relic"}, 1);
+
+    REQUIRE(listings.size() == 2);
+    CHECK(listings[0].itemSlug == "khora_prime_set");
+    REQUIRE(listings[0].sells.size() == 1);
+    CHECK(listings[0].sells[0].id == "bundle");
+    CHECK(listings[0].sells[0].platinumPerUnit() == doctest::Approx(6.0));
+
+    // 30 plat for 6 units is 5 per unit; buy orders never appear here.
+    CHECK(listings[1].itemSlug == "axi_a1_relic");
+    REQUIRE(listings[1].sells.size() == 1);
+    CHECK(listings[1].sells[0].platinumPerUnit() == doctest::Approx(5.0));
+
+    REQUIRE(fake->requests().size() == 2);
+    CHECK(fake->requests().at(0).url == V2_API + "/orders/item/khora_prime_set");
+    CHECK(fake->requests().at(1).url == V2_API + "/orders/item/axi_a1_relic");
+}
+
+TEST_CASE("bestSells keeps every listing when the limit is zero")
+{
+    FakeTransport *fake = nullptr;
+    MarketAPI api(makeTransport(fake));
+
+    fake->queueJson({{"data", nlohmann::json::array({orderJsonLike("a", "sell", 10, 1, 1),
+                                                     orderJsonLike("b", "sell", 12, 1, 1),
+                                                     orderJsonLike("c", "sell", 14, 1, 1)})},
+                     {"error", nullptr}});
+
+    const std::vector<MarketAPI::ItemListings> listings = api.bestSells({"x"}, 0);
+
+    REQUIRE(listings.size() == 1);
+    CHECK(listings[0].sells.size() == 3);
+}
+
+TEST_CASE("bestSells reports an item with no sell orders as an empty entry")
+{
+    FakeTransport *fake = nullptr;
+    MarketAPI api(makeTransport(fake));
+
+    fake->queueJson({{"data", nlohmann::json::array({orderJsonLike("b", "buy", 10, 1, 1)})},
+                     {"error", nullptr}});
+
+    const std::vector<MarketAPI::ItemListings> listings = api.bestSells({"x"});
+
+    REQUIRE(listings.size() == 1);
+    CHECK(listings[0].sells.empty());
+}
