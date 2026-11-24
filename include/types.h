@@ -57,7 +57,7 @@ struct Item
 
 // ==================== User Models ====================
 /**
- * @brief Shortened user model embedded in orders and transactions.
+ * @brief Shortened user model embedded in orders.
  *
  * `status` is the field that decides whether a counterparty can actually trade
  * right now. The API reports `invisible` as `offline`.
