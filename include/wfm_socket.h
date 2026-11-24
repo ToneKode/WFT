@@ -32,10 +32,25 @@
  *
  * ## Getting a transport
  *
- * This needs a libcurl compiled with WebSocket support. The vcpkg `curl` port
- * does not enable it, so supply your own WsTransport over a WS-capable client,
- * or poll through MarketAPI until one is available. `handle()` exists so
- * frames from an existing socket can be fed in directly.
+ * This needs a client that can speak WebSocket. The vcpkg `curl` port cannot
+ * (its `curl_version_info().protocols` has no `ws`/`wss`), so there is no
+ * `WsClient` here to hand it. You supply a `WsTransport` over your own
+ * WS-capable library, or you poll through `MarketAPI` instead.
+ *
+ * `handle()` is the seam for that. If your client already owns the socket —
+ * because it multiplexes other feeds onto it — pass a `WsTransport` whose
+ * `sendText()` writes to your client and whose `receive()` never returns a
+ * frame, then call `handle(frame)` for every text frame you receive. Your
+ * client does the reading; `poll()` is only a convenience for the case where
+ * a `WsTransport` owns the read loop.
+ *
+ * @code
+ * WfmSocket socket(std::unique_ptr<WsTransport>(new MyWsClient()));
+ * socket.onNewOrder([](const Order &order) { ... });
+ * socket.connect();
+ * socket.subscribeNewOrders("pc", true);
+ * while (running) { socket.poll(1000); }
+ * @endcode
  */
 class WfmSocket
 {

@@ -218,3 +218,20 @@ TEST_CASE("WfmSocket rejects a null transport")
 {
     CHECK_THROWS_AS(WfmSocket(std::unique_ptr<WsTransport>()), std::invalid_argument);
 }
+
+TEST_CASE("handle() dispatches a frame from a caller-owned socket")
+{
+    // The documented way to use the protocol layer without a WsTransport that
+    // reads: feed frames yourself. No connect() is involved.
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+
+    std::vector<Order> received;
+    socket.onNewOrder([&received](const Order &order) { received.push_back(order); });
+
+    socket.handle(newOrderFrame("muxed", "sell", 40, 2));
+
+    CHECK_FALSE(socket.isConnected());
+    REQUIRE(received.size() == 1);
+    CHECK(received[0].id == "muxed");
+}
