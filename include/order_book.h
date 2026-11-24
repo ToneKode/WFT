@@ -25,7 +25,8 @@
  *
  * Matches the server's `/top` convention: sells cheapest-per-unit first (the
  * buyer's view), buys highest-per-unit first (the seller's), with offline users
- * excluded because they cannot trade.
+ * excluded because they cannot trade. Orders with no embedded user stay: an
+ * unknown owner is not offline.
  *
  * Endo and star items have extra server-side ranking rules that are not
  * replicated here; for those, prefer `/top`, which MarketAPI also exposes.
@@ -48,8 +49,8 @@ public:
             {
                 continue;
             }
-            // A missing user means "unknown owner", not "offline": /orders/my
-            // omits the owner, so only an explicit non-online status filters.
+            // A missing user means "unknown owner", not "offline".
+            // Only an explicit non-online status filters.
             if (order.hasUser && !order.user.isOnline())
             {
                 continue;

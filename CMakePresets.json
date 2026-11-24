@@ -15,31 +15,19 @@
       }
     },
     {
-      "name": "mingw",
-      "displayName": "MinGW (vcpkg x64-mingw-dynamic)",
-      "description": "Default Windows build. Requires vcpkg at VCPKG_ROOT/C:\\Users\\<you>\\vcpkg.",
+      "name": "default",
+      "displayName": "Default (Ninja + vcpkg manifest)",
+      "description": "One preset for Windows, Linux, and macOS. The triplet follows the compiler.",
       "inherits": "base",
-      "generator": "MinGW Makefiles",
+      "generator": "Ninja",
       "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic",
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "linux",
-      "displayName": "Linux (system curl + nlohmann_json)",
-      "description": "For CI and Linux desktops; expects libcurl-dev and nlohmann-json3-dev.",
-      "inherits": "base",
-      "generator": "Unix Makefiles",
-      "cacheVariables": {
-        "WFT_BOOTSTRAP_VCPKG": "OFF",
         "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
       "name": "ci",
       "displayName": "CI (release, warnings as errors)",
-      "inherits": "linux",
+      "inherits": "default",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "WFT_WARNINGS_AS_ERRORS": "ON"
@@ -48,12 +36,8 @@
   ],
   "buildPresets": [
     {
-      "name": "mingw",
-      "configurePreset": "mingw"
-    },
-    {
-      "name": "linux",
-      "configurePreset": "linux"
+      "name": "default",
+      "configurePreset": "default"
     },
     {
       "name": "ci",
@@ -62,15 +46,8 @@
   ],
   "testPresets": [
     {
-      "name": "mingw",
-      "configurePreset": "mingw",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "linux",
-      "configurePreset": "linux",
+      "name": "default",
+      "configurePreset": "default",
       "output": {
         "outputOnFailure": true
       }

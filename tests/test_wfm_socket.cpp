@@ -205,6 +205,20 @@ TEST_CASE("poll reports zero when no frame arrives")
     CHECK_FALSE(socket.poll(1));
 }
 
+TEST_CASE("item and profile order subscriptions are refused before sending")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    // The server ships these routes as stubs, so nothing may reach the wire.
+    CHECK_THROWS_WITH(socket.subscribeItemOrders("khora_prime_set"),
+                      doctest::Contains("not registered on the server"));
+    CHECK_THROWS_WITH(socket.subscribeProfileOrders("some-user"),
+                      doctest::Contains("not registered on the server"));
+    CHECK(fake->sent().empty());
+}
+
 TEST_CASE("sending on a closed socket throws")
 {
     FakeWsTransport *fake = nullptr;

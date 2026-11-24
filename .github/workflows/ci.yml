@@ -14,30 +14,48 @@ jobs:
   linux:
     name: Build and test (Linux)
     runs-on: ubuntu-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
     steps:
       - uses: actions/checkout@v4
 
-      # System packages rather than vcpkg: the Linux path needs no triplet
-      # guesswork, so CI stays green without committing a baseline.
-      - name: Install dependencies
+      - name: Install compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake libcurl4-openssl-dev nlohmann-json3-dev
+          sudo apt-get install -y build-essential ninja-build
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+            ${{ env.VCPKG_ROOT }}/downloads
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
+      # curl[websockets] and nlohmann_json both come from vcpkg.json.
+      - name: Bootstrap vcpkg
+        run: |
+          if [ ! -d "$VCPKG_ROOT/.git" ]; then
+            git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+          fi
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Configure
-        run: cmake --preset ci
+        run: cmake --preset default -DWFT_WARNINGS_AS_ERRORS=ON
 
       - name: Build
-        run: cmake --build --preset ci
+        run: cmake --build --preset default
 
       - name: Test
-        run: ctest --preset ci
+        run: ctest --preset default
 
   windows:
     name: Build and test (Windows / MinGW + vcpkg)
     runs-on: windows-latest
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
     steps:
       - uses: actions/checkout@v4
 
@@ -49,32 +67,33 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-ninja
 
-      - name: Cache vcpkg
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
-            ${{ env.VCPKG_ROOT }}/installed
-          key: vcpkg-${{ runner.os }}-x64-mingw-dynamic-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+            ${{ env.VCPKG_ROOT }}/downloads
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
 
+      # Dependencies come from the manifest, so WebSockets cannot be forgotten.
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
           if (-not (Test-Path "$env:VCPKG_ROOT/.git")) {
             git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
           }
+          New-Item -ItemType Directory -Force "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
           & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
-          & "$env:VCPKG_ROOT/vcpkg.exe" install curl nlohmann-json --triplet x64-mingw-dynamic
 
       - name: Configure
         shell: msys2 {0}
-        run: cmake --preset mingw -DWFT_WARNINGS_AS_ERRORS=ON
+        run: cmake --preset default -DWFT_WARNINGS_AS_ERRORS=ON
 
       - name: Build
         shell: msys2 {0}
-        run: cmake --build --preset mingw
+        run: cmake --build --preset default
 
       - name: Test
         shell: msys2 {0}
-        run: ctest --preset mingw
+        run: ctest --preset default

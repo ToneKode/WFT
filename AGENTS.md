@@ -5,182 +5,137 @@ commands verbatim; they are the tested path.
 
 ## What this is
 
-A small C++14 client library for the Warframe.Market API. Header-heavy: most
-logic lives in `include/*.h`, with one `.cpp` for the global item database.
+A small C++14 library for reading public Warframe.Market data. Header-only.
+No account and no token.
 
-There are two entry points, split by whether they need an account:
-
-- `MarketAPI` (`market_api.h`) — anonymous, read-only market data. No token.
-- `WarframeMarketAPI` (`wfm_api.h`) — auth and order placement.
-
-Keep them separate. The read side works today; the write side depends on an
-auth flow the API operator has not finished publishing.
+- `MarketAPI` (`market_api.h`) — items, versions, orders, top, recent, best sells.
+- `OrderBook` (`order_book.h`) — unit-normalised ranking of one item's orders.
+- `item_cache` (`item_cache.h`) — catalogue on disk, tagged with the version hash.
+- `WfmSocket` (`wfm_socket.h`) — live new-order feed. The caller supplies the socket.
 
 ## Commands
 
 All commands run from the repo root.
 
 ```bash
-# Configure (Windows / MinGW — vcpkg toolchain is auto-detected)
-cmake --preset mingw
-
-# Configure (Linux / macOS — system libcurl + nlohmann_json)
-cmake --preset linux
+# Configure (any OS — Ninja + the vcpkg manifest; the triplet follows the compiler)
+cmake --preset default
 
 # Build
-cmake --build --preset mingw      # or: --preset linux
+cmake --build --preset default
 
 # Test
-ctest --preset mingw              # or: --preset linux
+ctest --preset default
 ```
 
-`cmake --preset ci` is the strict configuration used by GitHub Actions:
-Release build with `-Werror`. **Treat a warning as a failure**; the CI job does.
+`cmake --preset ci` is the strict configuration: Release build with `-Werror`.
+**Treat a warning as a failure**; both CI jobs do, and they configure with
+`-DWFT_WARNINGS_AS_ERRORS=ON`.
 
 ### Windows prerequisites
 
-- MSYS2 UCRT64 toolchain (`g++` on `PATH`)
-- vcpkg at `C:\Users\<you>\vcpkg` (or set `VCPKG_ROOT`), with
-  `vcpkg install curl nlohmann-json --triplet x64-mingw-dynamic`
+- MSYS2 UCRT64 toolchain (`g++` on `PATH`) and Ninja
+- vcpkg at `C:\Users\<you>\vcpkg` (or set `VCPKG_ROOT`)
 
-The top of `CMakeLists.txt` finds vcpkg automatically. If you configure with a
-plain `cmake -S . -B build`, you must pass
-`-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake` and
-`-DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic`. The MSVC-runtime default triplet
-fails at link time with an error that never mentions triplets — see
-`cmake/WftDependencies.cmake`.
+Dependencies come from `vcpkg.json` in manifest mode, which requires
+`curl[websockets]` and `nlohmann_json`. There is no separate `vcpkg install`
+step, so WebSockets cannot be left out. The top of `CMakeLists.txt` finds vcpkg
+automatically, and configuration fails if the curl found has no WebSockets.
+
+Set `-DWFT_BOOTSTRAP_VCPKG=OFF` only when the machine already provides curl and
+nlohmann_json.
 
 ## Layout
 
 | Path | Role |
 | --- | --- |
-| `include/market_api.h` | **Read-only API (no auth).** `MarketAPI` — items, versions, orders, top, recent, best sells |
-| `include/wfm_api.h` | **Write API.** `WarframeMarketAPI` — auth, item DB load, orders |
-| `include/order_book.h` | `OrderBook` — unit-normalised ranking of one item's orders |
-| `include/item_cache.h` | `item_cache::saveItems`/`loadItems` — catalogue on disk, tagged with the version hash |
-| `include/wfm_socket.h` | `WfmSocket` — WebSocket protocol layer (routes, dispatch) |
-| `include/ws_transport.h` | Transport seam for `WfmSocket`, so protocol is testable |
-| `include/order_validation.h` | Per-item order rules; `ValidationError` names the bad field |
-| `include/wfm_json.h` | v2 JSON → model mapping (`wfm_json::parseOrder`, etc.) |
-| `include/api_error.h` | v2 error envelope parsing; `ApiError` carries `request`/`inputs` codes |
-| `include/wfm_client.h` | Legacy interactive console demo over `WarframeMarketAPI` |
-| `include/http_client.h` | libcurl implementation of `HttpTransport`; 350 ms pacing, 429/509 retry |
-| `include/http_transport.h` | Transport interface; the seam that makes tests possible |
-| `include/constants.h` | `V1_API` / `V2_API` / `WS_API`, `WFT_USER_AGENT`, global `itemDB` |
-| `include/types.h` | Request/response models |
-| `src/constants.cpp` | Defines the global `itemDB` |
-| `tests/` | doctest suite; `tests/fake_transport.h` and `fake_ws_transport.h` are the fakes |
-| `examples/` | Runnable demos; built as separate executables |
+| `include/market_api.h` | `MarketAPI` — anonymous reads |
+| `include/order_book.h` | `OrderBook` — per-unit ranking |
+| `include/item_cache.h` | `item_cache::saveItems` / `loadItems` |
+| `include/wfm_socket.h` | `WfmSocket` — new-order protocol |
+| `include/ws_transport.h` | Socket seam so the protocol is testable |
+| `include/wfm_json.h` | v2 JSON → `Item` / `Order` / `UserShort` |
+| `include/api_error.h` | v2 error envelope; `ApiError` carries `request` / `inputs` codes |
+| `include/http_client.h` | libcurl `HttpTransport`; 350 ms pacing, 429/509 retry |
+| `include/http_transport.h` | HTTP seam; `Get` only |
+| `include/constants.h` | `V2_API`, `WS_API`, `WFT_USER_AGENT` |
+| `include/types.h` | `Item`, `Order`, `UserShort` |
+| `src/main.cpp` | Live demo: item count and one best sell |
+| `tests/` | doctest; `fake_transport.h` and `fake_ws_transport.h` |
 
-`wft_core` is the library target. Executables and tests link it, so tests
-exercise the same code that ships.
+`wft_core` is an INTERFACE library. The demo and `wft_tests` link it, so tests
+compile the same headers that ship.
 
 ## Things that will bite you
 
-- **`itemDB` is a process-wide global.** Tests that touch it call
- `itemDB.clear()` first (see `tests/test_api.cpp`). Order-dependent tests
- will pass locally and fail in isolation — always reset.
-- **`loadItems()` must run before orders, not just lookups.** Order request
- validation reads each item's rank/subtype/bulk metadata, so placing an order
- for an unloaded slug throws immediately rather than guessing the shape.
-- **`loadItems()` is all-or-nothing.** It parses into a scratch `ItemDatabase`
- and swaps on success, so a failed reload cannot corrupt a working index.
 - **Never call the live API in a test.** Construct
- `WarframeMarketAPI(std::unique_ptr<HttpTransport>(new FakeTransport()))` and
- queue replies. `FakeTransport` throws immediately if a test forgets to queue
- a reply, so a leaked network call fails fast instead of hanging.
+  `MarketAPI(std::unique_ptr<HttpTransport>(new FakeTransport()))` or
+  `WfmSocket` over `FakeWsTransport`, and queue replies. `FakeTransport` throws
+  immediately if a test forgets to queue a reply.
 - **`FakeTransport` replies are FIFO**, one per request. A test that makes N
- requests queues N replies.
-- **Header maps are case-insensitive** (`CaseInsensitiveLess`). A
- case-sensitive lookup misses a token the server spelled `Authorization`;
- that bug silently produces an empty token and a confusing JWT error later.
- Keep `HttpTransport::Headers` as the map type when adding methods.
+  requests queues N replies. Non-2xx replies throw `HttpStatusError` with the
+  body, matching `HttpClient`.
+- **Header maps are case-insensitive** (`CaseInsensitiveLess`). Keep
+  `HttpTransport::Headers` as the map type when adding methods.
 - **Errors live in the envelope, not the status code.** Use
- `throwIfApiError()` and check both the nested (`error.request`) and flat
- (`request`) shapes — the docs overview and live traffic disagree, so both
- must work. `ApiError` carries `requestCodes()` and `inputCodes()`
- (`"platinum=app.field.tooSmall"`).
-- **`HttpStatusError` carries the body.** The useful error code is usually in
- the body of a 4xx, so unwrap it before reporting a bare status.
-- **Auth is a state machine** (`UnauthenticatedState`/`AuthenticatedState`).
- Order methods go through `api.authenticated()`, which throws unless
- `setJWT()` set a non-empty token.
-- **`setJWT("")` clears auth.** Use `clearJWT()` for intent.
-- **Tokens are accepted with or without the legacy `"JWT "` prefix**;
- requests always send `Bearer <token>`. Do not reintroduce
- `extractBearerToken()`'s old throw-on-unprefixed behaviour.
-- **`login()` targets v1 on purpose.** v2 `/auth/signin` is first-party only
- and needs Firebase App Check; public OAuth registration is not open. Keep
- login behind one method so the eventual OAuth swap is a single change.
-- **`http_client.h` and `wfm_client.h` define `using json = nlohmann::json;`
- at global scope.** Including both in one translation unit is fine (identical
- alias), but do not introduce a different `json` alias.
-- **`Order::platinum` is a BUNDLE TOTAL, not a unit price.** This is the
- single most expensive thing to get wrong. `platinum` is the price for
- `perTrade` units. Live example: buy orders on one relic appear as
- `5 plat / perTrade 1` and `30 plat / perTrade 6` — the same offer. Always
- compare via `Order::platinumPerUnit()` or let `OrderBook` do it. Ranking on
- raw `platinum` makes every bulk seller look several times too expensive.
-- **`OrderBook` is the only ranking path.** It drops hidden orders and
- offline users (who cannot trade) but keeps orders with no embedded `user`,
- because `/orders/my` legitimately omits the owner. `spread()` returning <= 0
- means the book is crossed, which usually means a stale side.
+  `throwIfApiError()` and check both the nested (`error.request`) and flat
+  (`request`) shapes — the docs overview and live traffic disagree, so both
+  must work. `ApiError` carries `requestCodes()` and `inputCodes()`.
+- **`HttpStatusError` carries the body.** Unwrap a 4xx body before reporting a
+  bare status.
+- **`http_client.h` defines `using json = nlohmann::json;` at global scope.**
+  Do not introduce a different `json` alias. `MarketAPI` relies on that one.
+- **`Order::platinum` is a bundle total, not a unit price.** `platinum` is the
+  price for `perTrade` units. Live example: `5 plat / perTrade 1` and
+  `30 plat / perTrade 6` are the same offer. Compare with
+  `Order::platinumPerUnit()` or `OrderBook`.
+- **`OrderBook` drops hidden orders and offline users** (`UserShort::status`
+  is parsed so this works). Orders with no embedded user stay: unknown is not
+  offline. `spread()` <= 0 means the book is crossed, usually a stale side.
 - **Endo and star items rank differently server-side.** `OrderBook` does not
- replicate that. For Ayatan sculptures and Endo listings prefer
- `MarketAPI::topOrdersForItem()`, which returns the server's own ranking. The
- same caveat applies to `bestSells()`, which ranks through `OrderBook`.
-- **`bestSells()` costs one request per slug.** It is a loop over
- `bookForItem()` relying on the transport's shared pacing, not a batcher: there
- is no multi-item orders endpoint, so a 20-slug call is a 20-request, ~7-second
- call by design. Do not "optimise" it into parallel requests; the 3-req/sec
- limit is per client and shared.
-- **No WebSocket transport ships, deliberately.** `WfmSocket` is the tested
- protocol layer, but there is no `WsClient`: the vcpkg `curl` port is built
- without WebSocket support (`CURL_VERSION_WEBSOCKETS` unset, no `ws`/`wss` in
- `curl_version_info().protocols`). Verified at runtime. Do not add a libcurl
- WS transport and assume it works — check that bit first. `WfmSocket::handle()`
- exists so frames from a WS-capable client you supply can be fed in, and is the
- intended path for a caller that already owns a socket; `WsTransport` is for
- callers that want this library to own the read loop.
-- **`MarketAPI::versions()` is the cache key, not decoration.** It returns the
- `collections.items` hash and `updatedAt`. A caller compares the hash saved with
- a cached catalogue against the current one and re-fetches only on change.
- Returning an empty `itemsHash` on an unexpected payload is deliberate: the
- caller then refreshes, which is always safe.
+  replicate that. Prefer `MarketAPI::topOrdersForItem()`. `bestSells()` ranks
+  through `OrderBook`, so the same caveat applies.
+- **`bestSells()` costs one request per slug.** There is no multi-item orders
+  endpoint. A 20-slug call is 20 requests, about 7 seconds, on purpose. Leave
+  the shared 3-req/sec limiter in place; do not fan the calls out in parallel.
+- **The socket protocol ships; a socket does not.** `WfmSocket` sends
+  `@wfm|cmd/subscribe/newOrders` (and the matching unsubscribe) and parses
+  `@wfm|event/subscriptions/newOrder` into `Order`. The URL is `WS_API` with
+  subprotocol `wfm`. Pass a `WsTransport`, or feed frames to `handle()`. The
+  vcpkg curl is built with `curl[websockets]` (the manifest requires it and
+  configuration fails without it), but there is no libcurl `WsClient` here yet.
+  `subscribeItemOrders()` / `subscribeProfileOrders()` throw
+  `std::logic_error`: those routes are unregistered stubs on the server. Online
+  count, status, and sign-in are not the order feed.
+- **`MarketAPI::versions()` is the cache key.** It returns the
+  `collections.items` hash and `updatedAt`. An empty `itemsHash` on an
+  unexpected payload is deliberate: the caller refreshes, which is safe.
 - **`item_cache::loadItems()` throws rather than returning empty.** A missing,
- unparsable, or empty cache is an error, because an empty item list looks like a
- working cache and would leave order placement validating against nothing.
- Entries go through the same `parseItem` as live traffic, and `toItemJson()`
- writes the API's own field names so the two cannot drift.
-- **`FakeTransport` throws `HttpStatusError` on non-2xx**, matching
- `HttpClient`. Keep that contract: a fake that returned error bodies as normal
- responses would leave the 4xx error-body path untested.
-- **libcurl global init is process-wide** and must not move back into the
- client's ctor/dtor: a second client's handles die with the first destructor.
+  unparsable, or empty cache is an error, because an empty list looks like a
+  working cache. Entries go through `parseItem`, and `toItemJson()` writes the
+  API's own field names.
+- **libcurl global init is process-wide** and stays out of the client
+  ctor/dtor: a second client's handles die with the first destructor.
 - **GCC `-Wdangling-reference` fires on helpers returning a reference while
- taking a `const std::string&`.** `requireDataArray`/`requireDataObject`
- return pointers and take `const char*` to stay clean under `-Werror`.
+  taking a `const std::string&`.** `requireDataArray` / `requireDataObject`
+  return pointers and take `const char*` to stay clean under `-Werror`.
 
 ## Conventions
 
-- C++14. No `std::optional` in the library headers (it appears in the legacy
- `wfm_client.h`); the request structs use `hasX` flags instead.
+- C++14. No `std::optional`. Optional fields use `hasX` flags.
 - 4-space indent, braces on the same line, 100-column limit (`.clang-format`).
 - Match the existing doc-comment style (`@brief`, `@param`, `@return`) on
- public API.
+  public API.
 - Prefer fixing a warning over suppressing it.
-- Keep `WarframeMarketAPI` about transport, auth state, and endpoint wiring.
- JSON mapping belongs in `wfm_json.h`, request rules in `order_validation.h`,
- and envelope handling in `api_error.h`.
-- Put new anonymous reads on `MarketAPI`, not `WarframeMarketAPI`. If a method
- needs no token, it does not belong on the class that owns auth.
+- HTTP reads go on `MarketAPI`. Live orders go through `WfmSocket`. JSON
+  mapping belongs in `wfm_json.h`. Envelope handling belongs in `api_error.h`.
 - Prefer the smallest change that works. No abstraction, option, or "for
- later" scaffolding nobody asked for; note what you skipped in one line.
+  later" scaffolding nobody asked for; note what you skipped in one line.
 
 ## Definition of done
 
-1. `cmake --build --preset mingw` (or `linux`) completes with no warnings.
-2. `ctest --preset mingw` passes.
+1. `cmake --build --preset default` completes with no warnings.
+2. `ctest --preset default` passes.
 3. New behaviour has a test in `tests/` that runs offline via `FakeTransport`
- or `FakeWsTransport`.
+   or `FakeWsTransport`.
 4. Public API changes are reflected in `README.md`.

@@ -26,9 +26,9 @@
  * dispatch and leaves framing to a WsTransport, so it is driven by canned
  * frames in tests without a socket.
  *
- * Only routes the server actually registers are supported. Item and profile
- * order subscriptions exist as backend stubs but are not public routes, so they
- * are deliberately absent rather than half-wired.
+ * Only routes the server actually registers are supported. The new-order
+ * stream is live; item and profile order subscriptions exist as backend stubs
+ * and are not public routes, so calling them throws instead of sending.
  *
  * ## Getting a transport
  *
@@ -96,6 +96,24 @@ public:
     {
         return send("@wfm|cmd/unsubscribe/newOrders", filters(platform, crossplay));
     }
+
+    /**
+     * @brief Subscribe to one item's orders.
+     *
+     * Takes an item slug, e.g. `khora_prime_set`.
+     * @throws std::logic_error Always: the route is not registered on the
+     *         server, so nothing is sent.
+     */
+    void subscribeItemOrders(const std::string &) { unregisteredRoute(); }
+
+    /**
+     * @brief Subscribe to one user's orders.
+     *
+     * Takes an in-game name.
+     * @throws std::logic_error Always: the route is not registered on the
+     *         server, so nothing is sent.
+     */
+    void subscribeProfileOrders(const std::string &) { unregisteredRoute(); }
 
     void onNewOrder(NewOrderHandler handler) { newOrderHandler_ = std::move(handler); }
 
@@ -223,6 +241,13 @@ private:
         transport_->sendText(
             nlohmann::json{{"route", route}, {"id", id}, {"payload", payload}}.dump());
         return id;
+    }
+
+    static void unregisteredRoute()
+    {
+        // shortcut: server route not registered, remove the throw when the docs
+        // list the route as active.
+        throw std::logic_error("route is not registered on the server");
     }
 };
 

@@ -8,8 +8,6 @@ target_include_directories(doctest_main PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third
 wft_set_warnings(doctest_main)
 
 add_executable(wft_tests
-        test_item_database.cpp
-        test_api.cpp
         test_order_book.cpp
         test_market_api.cpp
         test_item_cache.cpp

@@ -10,9 +10,8 @@
  * @file wfm_json.h
  * @brief Mapping between v2 JSON payloads and the public model types.
  *
- * Parsing lives here rather than inside WarframeMarketAPI so that response
- * shape handling is testable on its own and the API class stays about
- * transport, auth state, and endpoint wiring.
+ * Parsing lives here rather than inside MarketAPI so response shape handling
+ * stays in one place.
  *
  * Optional fields are detected with `hasKey()` rather than defaulted, because
  * "absent" and "zero" carry different meaning for order fields.
@@ -27,7 +26,7 @@ inline bool hasKey(const nlohmann::json &object, const char *key)
 }
 
 /**
- * @brief Parse one item, including the metadata that order validation needs.
+ * @brief Parse one item, including optional trading metadata.
  * @throws std::runtime_error when the required `id` or `slug` is missing.
  */
 inline Item parseItem(const nlohmann::json &json)
@@ -125,7 +124,7 @@ inline Item parseItem(const nlohmann::json &json)
  * Used by the item cache: writing the API's own field names means the load path
  * reuses `parseItem` instead of a second mapping that could drift from it.
  * Optional metadata is written only when its `hasX` flag is set, because
- * "absent" and "zero" mean different things to order validation.
+ * "absent" and "zero" are not the same value.
  */
 inline nlohmann::json toItemJson(const Item &item)
 {
@@ -227,8 +226,7 @@ inline UserShort parseUserShort(const nlohmann::json &json)
  * @brief Parse one order.
  * @throws std::runtime_error when a required field is missing or mistyped.
  *
- * `itemSlug` is left empty here: the caller resolves it through the item
- * database, which is the only component that knows slug/id pairs.
+ * `itemSlug` stays empty: public order payloads carry `itemId`, not a slug.
  */
 inline Order parseOrder(const nlohmann::json &json)
 {
@@ -310,48 +308,6 @@ inline Order parseOrder(const nlohmann::json &json)
     }
 
     return order;
-}
-
-/**
- * @brief Parse a close-order transaction.
- * @throws std::runtime_error when `id` is missing.
- */
-inline Transaction parseTransaction(const nlohmann::json &json)
-{
-    if (!json.is_object() || !hasKey(json, "id"))
-    {
-        throw std::runtime_error("Invalid transaction: missing id");
-    }
-
-    Transaction tx;
-    tx.id = json.at("id").get<std::string>();
-
-    if (hasKey(json, "type"))
-    {
-        tx.type = json.at("type").get<std::string>();
-    }
-    if (hasKey(json, "originId"))
-    {
-        tx.originId = json.at("originId").get<std::string>();
-    }
-    if (hasKey(json, "platinum"))
-    {
-        tx.platinum = json.at("platinum").get<double>();
-    }
-    if (hasKey(json, "quantity"))
-    {
-        tx.quantity = json.at("quantity").get<int>();
-    }
-    if (hasKey(json, "createdAt"))
-    {
-        tx.createdAt = json.at("createdAt").get<std::string>();
-    }
-    if (hasKey(json, "updatedAt"))
-    {
-        tx.updatedAt = json.at("updatedAt").get<std::string>();
-    }
-
-    return tx;
 }
 
 /**

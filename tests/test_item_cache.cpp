@@ -95,7 +95,7 @@ TEST_CASE("versions() tolerates a missing collections object")
     CHECK(versions.updatedAt == "2026-10-28T03:52:09Z");
 }
 
-TEST_CASE("the item cache round-trips every field order validation needs")
+TEST_CASE("the item cache round-trips optional item fields")
 {
     const std::string path = tempPath("roundtrip");
     removeFile(path);

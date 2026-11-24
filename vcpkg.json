@@ -1,0 +1,13 @@
+{
+  "name": "wft",
+  "version-string": "1.0.0",
+  "dependencies": [
+    {
+      "name": "curl",
+      "features": [
+        "websockets"
+      ]
+    },
+    "nlohmann-json"
+  ]
+}

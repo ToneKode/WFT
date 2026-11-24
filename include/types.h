@@ -4,26 +4,12 @@
 #include <string>
 #include <vector>
 
-// ==================== Authentication ====================
-struct AuthResponse
-{
-    std::string token;
-    std::string user_id;
-    std::string ingame_name;
-};
-
 // ==================== Market Data ====================
 /**
- * @brief Tradable item plus the metadata that order validation needs.
+ * @brief Tradable item from the public items endpoints.
  *
- * The v2 API is strict about which order fields are allowed: `perTrade` is
- * required for bulk-tradable items and forbidden otherwise, `rank` likewise
- * for ranked items, `subtype` for items with subtypes, and so on. Those rules
- * are only checkable if the item's own metadata is kept, so the lookup
- * database stores the fields below rather than id/slug alone.
- *
- * Optional metadata is represented by the `hasX` flags for the same reason the
- * request structs do it: the library is C++14 and cannot use std::optional.
+ * Optional metadata uses `hasX` flags: this library is C++14, and a missing
+ * field is not the same as zero.
  */
 struct Item
 {
@@ -59,13 +45,13 @@ struct Item
     bool hasTradingTax = false;
     int tradingTax = 0;
 
-    /// True when creating an order for this item requires `rank`.
+    /// True when the item has a max rank.
     bool requiresRank() const { return hasMaxRank; }
-    /// True when creating an order for this item requires `subtype`.
+    /// True when the item has subtypes.
     bool requiresSubtype() const { return !subtypes.empty(); }
-    /// True when creating an order for this item requires `perTrade`.
+    /// True when the item is bulk-tradable.
     bool requiresPerTrade() const { return hasBulkTradable && bulkTradable; }
-    /// True when creating an order for this item requires star counts.
+    /// True when the item has amber or cyan star slots.
     bool requiresStars() const { return hasMaxAmberStars || hasMaxCyanStars; }
 };
 
@@ -94,11 +80,10 @@ struct UserShort
 
 // ==================== Order Models ====================
 /**
- * @brief Order as returned by the v2 API.
+ * @brief Order from a public orders endpoint or the new-order feed.
  *
- * `user` is only populated by endpoints that embed the owner (item orders,
- * recent orders, user orders); `/orders/my` omits it because the owner is the
- * caller.
+ * `user` is set when the payload embeds the owner. A missing user is unknown,
+ * not offline.
  */
 struct Order
 {
@@ -140,110 +125,5 @@ struct Order
         return static_cast<double>(platinum) / static_cast<double>(units);
     }
 };
-
-/**
- * @brief Result of closing an order.
- *
- * Close returns a Transaction, not an Order. A full close deletes the order and
- * a partial close leaves it with a reduced quantity, so callers need the
- * remaining quantity rather than the closed one.
- */
-struct Transaction
-{
-    std::string id;
-    std::string type;
-    std::string originId;
-    double platinum = 0.0;
-    int quantity = 0;
-    std::string createdAt;
-    std::string updatedAt;
-};
-
-// ==================== Order Requests ====================
-/**
- * @brief Partial update for PATCH /v2/order/{id}.
- *
- * Each field is gated by a `hasX` flag because omitting a field and sending a
- * zero value mean different things to the API.
- */
-struct UpdateOrderRequest
-{
-    bool hasPlatinum = false;
-    int platinum = 0;
-
-    bool hasQuantity = false;
-    int quantity = 0;
-
-    bool hasVisible = false;
-    bool visible = true;
-
-    bool hasRank = false;
-    int rank = 0;
-
-    bool hasPerTrade = false;
-    int perTrade = 0;
-
-    bool hasCharges = false;
-    int charges = 0;
-
-    bool hasSubtype = false;
-    std::string subtype;
-
-    bool hasAmberStars = false;
-    int amberStars = 0;
-
-    bool hasCyanStars = false;
-    int cyanStars = 0;
-
-    bool hasChanges() const
-    {
-        return hasPlatinum || hasQuantity || hasVisible || hasRank || hasPerTrade ||
-               hasCharges || hasSubtype || hasAmberStars || hasCyanStars;
-    }
-};
-
-/// Order type accepted by the create and update endpoints.
-enum class OrderType
-{
-    Sell,
-    Buy
-};
-
-/**
- * @brief Request for POST /v2/order.
- *
- * The API rejects fields that do not apply to the item, so callers must set
- * exactly the optional fields that apply to the item being traded. Use
- * `validateAgainst()` to check that before spending a request.
- */
-struct PlaceOrderRequest
-{
-    std::string itemSlug;
-    OrderType type = OrderType::Sell;
-    int platinum = 0;
-    int quantity = 1;
-    bool visible = true;
-
-    bool hasPerTrade = false;
-    int perTrade = 0;
-
-    bool hasRank = false;
-    int rank = 0;
-
-    bool hasCharges = false;
-    int charges = 0;
-
-    bool hasSubtype = false;
-    std::string subtype;
-
-    bool hasAmberStars = false;
-    int amberStars = 0;
-
-    bool hasCyanStars = false;
-    int cyanStars = 0;
-};
-
-/// Previous name for PlaceOrderRequest, kept so existing callers compile.
-using SellOrderRequest = PlaceOrderRequest;
 
 #endif // TYPES_H

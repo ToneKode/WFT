@@ -1,50 +1,43 @@
 /**
  * @file main.cpp
- * @brief Simple demonstration of the Warframe Market API client
+ * @brief Read a public item count and one item's best sell.
+ *
+ * Hits the live API. The test suite does not.
  */
 
-#include <algorithm>
 #include <iostream>
-#include "../include/wfm_api.h"
+#include "market_api.h"
 
 int main()
 {
     try
     {
-        WarframeMarketAPI api;
-        
-        std::cout << "=== Warframe Market API Client ===" << std::endl;
-        std::cout << "\nThis is a C++ API client for Warframe.Market" << std::endl;
-        std::cout << "Check the examples/ folder for usage demonstrations:" << std::endl;
-        std::cout << "  - basic_usage.cpp      : Authentication and item search" << std::endl;
-        std::cout << "  - order_management.cpp : Full order management workflow" << std::endl;
-        
-        std::cout << "\n--- Quick Demo ---" << std::endl;
-        
-        // Load items (no authentication needed)
-        std::cout << "Loading items..." << std::endl;
-        size_t itemCount = api.loadItems();
-        std::cout << "✓ Loaded " << itemCount << " tradeable items" << std::endl;
-        
-        // Search example
-        std::cout << "\nSearching for 'prime' items..." << std::endl;
-        auto results = api.searchItems("prime");
-        std::cout << "✓ Found " << results.size() << " items containing 'prime'" << std::endl;
-        
-        std::cout << "\nFirst 5 results:" << std::endl;
-        for (size_t i = 0; i < std::min(results.size(), size_t(5)); ++i)
+        MarketAPI api;
+
+        const std::vector<Item> items = api.items();
+        std::cout << items.size() << " items\n";
+        if (items.empty())
         {
-            std::cout << "  " << (i + 1) << ". " << results[i] << std::endl;
+            return 0;
         }
-        
-        std::cout << "\n=== Demo complete ===" << std::endl;
-        std::cout << "For full functionality, see the example programs." << std::endl;
+
+        const std::string slug = items.front().slug;
+        const OrderBook book = api.bookForItem(slug);
+        double perUnit = 0.0;
+        if (book.bestSell(perUnit))
+        {
+            std::cout << slug << " best sell: " << perUnit << " plat per unit\n";
+        }
+        else
+        {
+            std::cout << slug << " has no sell orders\n";
+        }
     }
-    catch (const std::exception& e)
+    catch (const std::exception &error)
     {
-        std::cerr << "Error: " << e.what() << std::endl;
+        std::cerr << "Error: " << error.what() << std::endl;
         return 1;
     }
-    
+
     return 0;
 }

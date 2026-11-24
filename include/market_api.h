@@ -20,13 +20,8 @@
  * @file market_api.h
  * @brief Anonymous read-only marketplace data.
  *
- * Everything here works with no token and no account, which is the point: the
- * v1 session endpoint is deprecated and public OAuth registration is not open,
- * so the read side of a trading system can be built and relied on today while
- * order placement waits on authorization the library cannot supply.
- *
- * Callers own caching. The API rules ask for it, and `/v2/versions` exists to
- * tell you when a cached item list has actually gone stale.
+ * No token and no account. Callers own caching. The API rules ask for it, and
+ * `/v2/versions` exists to tell you when a cached item list has gone stale.
  */
 class MarketAPI
 {
@@ -59,7 +54,7 @@ public:
     }
 
     /**
-     * @brief Every tradable item, with the metadata order validation needs.
+     * @brief Every tradable item.
      */
     std::vector<Item> items()
     {

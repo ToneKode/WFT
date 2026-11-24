@@ -87,8 +87,8 @@ inline void saveItems(const std::string &path, const std::vector<Item> &items,
  * @throws std::runtime_error when the file is missing, is not an item cache, or
  *         holds no items.
  *
- * Corruption fails loudly on purpose: an empty result would leave a caller
- * placing orders against an empty index, which looks like a working cache.
+ * Corruption fails loudly on purpose: an empty result looks like a working
+ * cache.
  */
 inline std::vector<Item> loadItems(const std::string &path, std::string &itemsHash)
 {

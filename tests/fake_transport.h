@@ -53,32 +53,10 @@ public:
 
     size_t pendingReplies() const { return replies_.size(); }
 
-    std::string post(const std::string &url,
-                     const nlohmann::json &payload,
-                     const Headers &headers,
-                     Headers &response_headers) override
-    {
-        return record("POST", url, payload, headers, response_headers).body;
-    }
-
-    std::string patch(const std::string &url,
-                      const nlohmann::json &payload,
-                      const Headers &headers,
-                      Headers &response_headers) override
-    {
-        return record("PATCH", url, payload, headers, response_headers).body;
-    }
-
     std::string Get(const std::string &url, const Headers &headers) override
     {
         Headers sink;
         return record("GET", url, nlohmann::json(), headers, sink).body;
-    }
-
-    long Delete(const std::string &url, const Headers &headers) override
-    {
-        Headers sink;
-        return record("DELETE", url, nlohmann::json(), headers, sink).status;
     }
 
 private:

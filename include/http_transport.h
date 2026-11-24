@@ -6,24 +6,20 @@
 #include <map>
 #include <stdexcept>
 #include <string>
-#include <nlohmann/json.hpp>
 
 /**
  * @file http_transport.h
- * @brief Abstract HTTP transport used by WarframeMarketAPI.
+ * @brief Abstract HTTP transport used by MarketAPI.
  *
- * Exists so the API layer can be exercised without a network or a live
- * Warframe.Market account: tests implement this interface with canned
- * responses. HttpClient is the production implementation.
+ * Exists so reads can be exercised without a network: tests implement this
+ * interface with canned responses. HttpClient is the production implementation.
  */
 
 /**
  * @brief Case-insensitive ordering for HTTP header names.
  *
- * HTTP header names are case-insensitive, so a lookup for "authorization"
- * must find a header the server spelled "Authorization". Without this, the
- * login path silently reads an empty token and fails later with a confusing
- * "invalid JWT" error.
+ * HTTP header names are case-insensitive, so a lookup for "content-type"
+ * must find a header the server spelled "Content-Type".
  */
 struct CaseInsensitiveLess
 {
@@ -67,19 +63,7 @@ public:
 
     virtual ~HttpTransport() {}
 
-    virtual std::string post(const std::string &url,
-                             const nlohmann::json &payload,
-                             const Headers &headers,
-                             Headers &response_headers) = 0;
-
-    virtual std::string patch(const std::string &url,
-                              const nlohmann::json &payload,
-                              const Headers &headers,
-                              Headers &response_headers) = 0;
-
     virtual std::string Get(const std::string &url, const Headers &headers) = 0;
-
-    virtual long Delete(const std::string &url, const Headers &headers) = 0;
 };
 
 #endif // HTTP_TRANSPORT_H

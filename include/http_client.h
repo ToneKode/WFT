@@ -45,30 +45,9 @@ public:
         ensureGlobalInit();
     }
 
-    std::string post(const std::string &url, const json &payload,
-                     const Headers &headers, Headers &response_headers) override
-    {
-        return perform("POST", url, payload, headers, &response_headers);
-    }
-
-    std::string patch(const std::string &url, const json &payload,
-                      const Headers &headers, Headers &response_headers) override
-    {
-        return perform("PATCH", url, payload, headers, &response_headers);
-    }
-
     std::string Get(const std::string &url, const Headers &headers) override
     {
         return perform("GET", url, json(), headers, nullptr);
-    }
-
-    long Delete(const std::string &url, const Headers &headers) override
-    {
-        CURL *handle = nullptr;
-        std::string body;
-        long status = 0;
-        execute("DELETE", url, json(), headers, nullptr, handle, body, status);
-        return status;
     }
 
 private:
