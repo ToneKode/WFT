@@ -54,9 +54,10 @@ fails at link time with an error that never mentions triplets — see
 
 | Path | Role |
 | --- | --- |
-| `include/market_api.h` | **Read-only API (no auth).** `MarketAPI` — items, orders, top, recent |
+| `include/market_api.h` | **Read-only API (no auth).** `MarketAPI` — items, versions, orders, top, recent, best sells |
 | `include/wfm_api.h` | **Write API.** `WarframeMarketAPI` — auth, item DB load, orders |
 | `include/order_book.h` | `OrderBook` — unit-normalised ranking of one item's orders |
+| `include/item_cache.h` | `item_cache::saveItems`/`loadItems` — catalogue on disk, tagged with the version hash |
 | `include/wfm_socket.h` | `WfmSocket` — WebSocket protocol layer (routes, dispatch) |
 | `include/ws_transport.h` | Transport seam for `WfmSocket`, so protocol is testable |
 | `include/order_validation.h` | Per-item order rules; `ValidationError` names the bad field |
@@ -126,13 +127,31 @@ exercise the same code that ships.
  means the book is crossed, which usually means a stale side.
 - **Endo and star items rank differently server-side.** `OrderBook` does not
  replicate that. For Ayatan sculptures and Endo listings prefer
- `MarketAPI::topOrdersForItem()`, which returns the server's own ranking.
+ `MarketAPI::topOrdersForItem()`, which returns the server's own ranking. The
+ same caveat applies to `bestSells()`, which ranks through `OrderBook`.
+- **`bestSells()` costs one request per slug.** It is a loop over
+ `bookForItem()` relying on the transport's shared pacing, not a batcher: there
+ is no multi-item orders endpoint, so a 20-slug call is a 20-request, ~7-second
+ call by design. Do not "optimise" it into parallel requests; the 3-req/sec
+ limit is per client and shared.
 - **No WebSocket transport ships, deliberately.** `WfmSocket` is the tested
  protocol layer, but there is no `WsClient`: the vcpkg `curl` port is built
  without WebSocket support (`CURL_VERSION_WEBSOCKETS` unset, no `ws`/`wss` in
  `curl_version_info().protocols`). Verified at runtime. Do not add a libcurl
  WS transport and assume it works — check that bit first. `WfmSocket::handle()`
- exists so frames from a WS-capable client you supply can be fed in.
+ exists so frames from a WS-capable client you supply can be fed in, and is the
+ intended path for a caller that already owns a socket; `WsTransport` is for
+ callers that want this library to own the read loop.
+- **`MarketAPI::versions()` is the cache key, not decoration.** It returns the
+ `collections.items` hash and `updatedAt`. A caller compares the hash saved with
+ a cached catalogue against the current one and re-fetches only on change.
+ Returning an empty `itemsHash` on an unexpected payload is deliberate: the
+ caller then refreshes, which is always safe.
+- **`item_cache::loadItems()` throws rather than returning empty.** A missing,
+ unparsable, or empty cache is an error, because an empty item list looks like a
+ working cache and would leave order placement validating against nothing.
+ Entries go through the same `parseItem` as live traffic, and `toItemJson()`
+ writes the API's own field names so the two cannot drift.
 - **`FakeTransport` throws `HttpStatusError` on non-2xx**, matching
  `HttpClient`. Keep that contract: a fake that returned error bodies as normal
  responses would leave the 4xx error-body path untested.

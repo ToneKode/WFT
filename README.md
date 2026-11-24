@@ -9,6 +9,10 @@ first-party only and public OAuth registration is not open yet.
 
 ## What This Repo Includes
 
+- `include/market_api.h` — anonymous reads: items, versions, orders, best listings
+- `include/order_book.h` — unit-normalised ranking of one item's orders
+- `include/item_cache.h` — save/load the item catalogue, keyed by its version hash
+- `include/wfm_socket.h` — realtime feed protocol layer (`WsTransport` seam)
 - `include/wfm_api.h` — the API: auth, items, orders
 - `include/http_client.h` — libcurl transport, rate limiting, retries
 - `include/http_transport.h` — transport interface (the test seam)
@@ -20,8 +24,14 @@ first-party only and public OAuth registration is not open yet.
 
 ## Implemented Features
 
+- Market data, no account needed (`MarketAPI`)
+  - Every item with the metadata order validation needs
+  - `/versions` item hash, so a cached catalogue only refreshes when it changed
+  - Save/load the catalogue to JSON (`item_cache::saveItems`/`loadItems`)
+  - Orders per item, an `OrderBook` per item, the server's own `/top` ranking
+  - `bestSells(slugs, limit)`: cheapest listings per item, already per unit
+  - Recent marketplace-wide orders
 - Item data
-  - Load every tradable item, with the metadata order validation needs
   - Substring search over slugs
   - Slug ↔ id resolution, O(1) both ways
 - Authentication
@@ -33,6 +43,54 @@ first-party only and public OAuth registration is not open yet.
   - Partial updates, including rank, subtype, charges, and star counts
   - Partial or full close, returning the resulting transaction
   - Delete
+
+## Reading market data
+
+`MarketAPI` needs no token. Nothing below touches the account surface.
+
+```cpp
+MarketAPI api;
+api.setContext("pc", "en", true);
+
+// Cache the catalogue: one small request decides whether the big one is needed.
+MarketAPI::Versions versions = api.versions();
+std::vector<Item> items;
+std::string cachedHash;
+try
+{
+    items = item_cache::loadItems("items.json", cachedHash);
+}
+catch (const std::runtime_error &)
+{
+    // No usable cache yet.
+}
+if (items.empty() || cachedHash != versions.itemsHash)
+{
+    items = api.items();
+    item_cache::saveItems("items.json", items, versions.itemsHash);
+}
+
+// Cheapest listings for several items, capped per item.
+for (const auto &listing : api.bestSells({"khora_prime_set", "axi_a1_relic"}, 3))
+{
+    for (const auto &order : listing.sells)
+    {
+        // perTrade means `platinum` is a BUNDLE TOTAL: rank on this, never on
+        // order.platinum. 30 plat / perTrade 6 is the same offer as 5 plat / 1.
+        std::cout << listing.itemSlug << ": " << order.platinumPerUnit() << " plat each, "
+                  << order.user.ingameName << "\n";
+    }
+}
+```
+
+One request per slug, paced by the transport's shared 3-req/sec limiter, so a
+wide batch is slow rather than throttled. `bestSells()` returns nothing for an
+item with no sell orders rather than failing the batch.
+
+The WebSocket is not reachable from this library: the vcpkg `curl` it builds
+against has no `ws`/`wss` support. `WfmSocket` is the tested protocol layer, and
+`handle(frame)` lets a caller feed it frames from any WS client they already
+have.
 
 ## Order validation
 
@@ -132,7 +190,10 @@ hanging.
   OAuth client registration is not open, so third-party integrations still use
   the v1 session endpoint.
 - The WebSocket (`wss://ws.warframe.market/socket`, `wfm` subprotocol) is
-  documented but not implemented here yet.
+  documented and its protocol layer is implemented and tested here
+  (`include/wfm_socket.h`), but nothing ships a socket: the vcpkg `curl` port is
+  built without WebSocket support, so there is no `WsTransport` implementation.
+  Supply one, or feed frames to `WfmSocket::handle()` from your own client.
 - The API is below 1.0 and documented as subject to breaking changes.
 - The API rules require an identifiable `User-Agent` and ask clients to cache
   and prefer WebSocket subscriptions over polling. Requests here are
@@ -140,6 +201,10 @@ hanging.
 
 ## Project Layout
 
+- `include/market_api.h`: anonymous read API (items, versions, orders, best sells)
+- `include/order_book.h`: unit-normalised ranking for one item
+- `include/item_cache.h`: item catalogue persistence keyed by version hash
+- `include/wfm_socket.h`: realtime feed protocol over the `WsTransport` seam
 - `include/wfm_api.h`: high-level API
 - `include/types.h`: request and response models
 - `include/http_client.h`: HTTP transport, rate limiting, retries
