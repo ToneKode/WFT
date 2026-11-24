@@ -12,6 +12,7 @@ add_executable(wft_tests
         test_api.cpp
         test_order_book.cpp
         test_market_api.cpp
+        test_item_cache.cpp
         test_wfm_socket.cpp
 )
 target_include_directories(wft_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

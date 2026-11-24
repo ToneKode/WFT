@@ -74,6 +74,46 @@ public:
     }
 
     /**
+     * @brief The subset of `/v2/versions` that tells a cache when to refresh.
+     *
+     * `itemsHash` is opaque and only useful for equality: compare the hash you
+     * saved alongside a cached item list with the hash reported here, and
+     * re-fetch only when they differ.
+     */
+    struct Versions
+    {
+        std::string itemsHash; ///< `data.collections.items`, base64.
+        std::string updatedAt; ///< `data.updatedAt`, ISO 8601.
+    };
+
+    /**
+     * @brief Current collection versions.
+     *
+     * One small request replaces `items()` when nothing has changed. Pair it
+     * with `item_cache::saveItems()`/`loadItems()`.
+     */
+    Versions versions()
+    {
+        const json root = get(V2_API + "/versions", "Failed to read versions");
+        const json &data = *wfm_json::requireDataObject(root, "Failed to read versions");
+
+        Versions result;
+        if (data.contains("collections") && data.at("collections").is_object())
+        {
+            const json &collections = data.at("collections");
+            if (collections.contains("items") && collections.at("items").is_string())
+            {
+                result.itemsHash = collections.at("items").get<std::string>();
+            }
+        }
+        if (data.contains("updatedAt") && data.at("updatedAt").is_string())
+        {
+            result.updatedAt = data.at("updatedAt").get<std::string>();
+        }
+        return result;
+    }
+
+    /**
      * @brief One item by slug.
      * @throws ApiError carrying `app.item.notFound` for an unknown slug.
      */

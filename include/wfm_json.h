@@ -120,6 +120,60 @@ inline Item parseItem(const nlohmann::json &json)
 }
 
 /**
+ * @brief Serialise an item in the shape `parseItem` reads back.
+ *
+ * Used by the item cache: writing the API's own field names means the load path
+ * reuses `parseItem` instead of a second mapping that could drift from it.
+ * Optional metadata is written only when its `hasX` flag is set, because
+ * "absent" and "zero" mean different things to order validation.
+ */
+inline nlohmann::json toItemJson(const Item &item)
+{
+    nlohmann::json out = {{"id", item.id}, {"slug", item.slug}, {"tradable", item.tradable}};
+    if (!item.itemName.empty())
+    {
+        out["i18n"] = {{"en", {{"name", item.itemName}}}};
+    }
+    if (!item.gameRef.empty())
+    {
+        out["gameRef"] = item.gameRef;
+    }
+    if (item.hasBulkTradable)
+    {
+        out["bulkTradable"] = item.bulkTradable;
+    }
+    if (item.hasMaxRank)
+    {
+        out["maxRank"] = item.maxRank;
+    }
+    if (item.hasMaxCharges)
+    {
+        out["maxCharges"] = item.maxCharges;
+    }
+    if (item.hasMaxAmberStars)
+    {
+        out["maxAmberStars"] = item.maxAmberStars;
+    }
+    if (item.hasMaxCyanStars)
+    {
+        out["maxCyanStars"] = item.maxCyanStars;
+    }
+    if (!item.subtypes.empty())
+    {
+        out["subtypes"] = item.subtypes;
+    }
+    if (item.hasSetRoot)
+    {
+        out["setRoot"] = item.setRoot;
+    }
+    if (item.hasTradingTax)
+    {
+        out["tradingTax"] = item.tradingTax;
+    }
+    return out;
+}
+
+/**
  * @brief Parse the shortened user object embedded in orders.
  * @throws std::runtime_error when `id` is missing.
  */
