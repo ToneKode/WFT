@@ -13,6 +13,8 @@ No account and no token.
 - `item_cache` (`item_cache.h`) — catalogue on disk, tagged with the version hash.
 - `WfmSocket` (`wfm_socket.h`) — live new-order feed. The caller supplies the socket.
 
+See `SCOPE.md` for what is in, what is out, and what is still open.
+
 ## Commands
 
 All commands run from the repo root.
@@ -32,10 +34,11 @@ ctest --preset default
 **Treat a warning as a failure**; both CI jobs do, and they configure with
 `-DWFT_WARNINGS_AS_ERRORS=ON`.
 
-### Windows prerequisites
+### Prerequisites
 
-- MSYS2 UCRT64 toolchain (`g++` on `PATH`) and Ninja
+- CMake 3.23+, **Ninja on `PATH`**, and a C++14 compiler
 - vcpkg at `C:\Users\<you>\vcpkg` (or set `VCPKG_ROOT`)
+- Windows: the MSYS2 UCRT64 toolchain, so `g++` is on `PATH`
 
 Dependencies come from `vcpkg.json` in manifest mode, which requires
 `curl[websockets]` and `nlohmann_json`. There is no separate `vcpkg install`
@@ -85,10 +88,21 @@ compile the same headers that ship.
   bare status.
 - **`http_client.h` defines `using json = nlohmann::json;` at global scope.**
   Do not introduce a different `json` alias. `MarketAPI` relies on that one.
-- **`Order::platinum` is a bundle total, not a unit price.** `platinum` is the
-  price for `perTrade` units. Live example: `5 plat / perTrade 1` and
-  `30 plat / perTrade 6` are the same offer. Compare with
-  `Order::platinumPerUnit()` or `OrderBook`.
+- **Ninja is required and is not in MSYS2 by default.** Both presets use it.
+  If configure fails with "CMAKE_MAKE_PROGRAM not set", install Ninja or put it
+  on `PATH`; vcpkg may already have one under
+  `vcpkg/downloads/tools/ninja-*-windows/ninja.exe`.
+- **The WebSockets guard can pass silently.** `cmake/WftDependencies.cmake`
+  checks `CURL_SUPPORTED_PROTOCOLS`, which vcpkg's config publishes. A system
+  curl found in bare module mode publishes nothing, so the check passes even if
+  that curl lacks WebSockets. The `WFT_BOOTSTRAP_VCPKG=OFF` escape hatch is
+  exactly that path.
+- **`order_book.h` is the only ranking path, and it is load-bearing.**
+  `Order::platinum` is a bundle total for `perTrade` units, not a unit price.
+  Live example: `5 plat / perTrade 1` and `30 plat / perTrade 6` are the same
+  offer. Compare with `Order::platinumPerUnit()` or let `OrderBook` do it.
+  Ranking on raw `platinum` makes every bulk seller look several times too
+  expensive.
 - **`OrderBook` drops hidden orders and offline users** (`UserShort::status`
   is parsed so this works). Orders with no embedded user stay: unknown is not
   offline. `spread()` <= 0 means the book is crossed, usually a stale side.
@@ -102,11 +116,11 @@ compile the same headers that ship.
   `@wfm|cmd/subscribe/newOrders` (and the matching unsubscribe) and parses
   `@wfm|event/subscriptions/newOrder` into `Order`. The URL is `WS_API` with
   subprotocol `wfm`. Pass a `WsTransport`, or feed frames to `handle()`. The
-  vcpkg curl is built with `curl[websockets]` (the manifest requires it and
-  configuration fails without it), but there is no libcurl `WsClient` here yet.
+  manifest now requires `curl[websockets]` and configuration fails without it,
+  but there is still no libcurl `WsClient` here: writing one is the next task.
   `subscribeItemOrders()` / `subscribeProfileOrders()` throw
-  `std::logic_error`: those routes are unregistered stubs on the server. Online
-  count, status, and sign-in are not the order feed.
+  `std::logic_error` because those routes are unregistered stubs on the server.
+  Online count, status, and sign-in are not the order feed.
 - **`MarketAPI::versions()` is the cache key.** It returns the
   `collections.items` hash and `updatedAt`. An empty `itemsHash` on an
   unexpected payload is deliberate: the caller refreshes, which is safe.
