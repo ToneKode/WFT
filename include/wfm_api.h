@@ -304,10 +304,25 @@ private:
     void deleteOrderImpl(const std::string &orderId)
     {
         const std::string url = V2_API + "/order/" + orderId;
-        const long status = http_client->Delete(url, HeaderFactory::authHeaders(bearerToken()));
-        if (status < 200 || status >= 300)
+        try
         {
-            throw std::runtime_error("Failed to delete order: HTTP " + std::to_string(status));
+            http_client->Delete(url, HeaderFactory::authHeaders(bearerToken()));
+        }
+        catch (const HttpStatusError &error)
+        {
+            try
+            {
+                throwIfApiError(json::parse(error.body()), "Failed to delete order");
+            }
+            catch (const ApiError &)
+            {
+                throw;
+            }
+            catch (const json::parse_error &)
+            {
+            }
+            throw std::runtime_error("Failed to delete order: HTTP " +
+                                     std::to_string(error.status()));
         }
     }
 

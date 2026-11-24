@@ -10,6 +10,9 @@ wft_set_warnings(doctest_main)
 add_executable(wft_tests
         test_item_database.cpp
         test_api.cpp
+        test_order_book.cpp
+        test_market_api.cpp
+        test_wfm_socket.cpp
 )
 target_include_directories(wft_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(wft_tests PRIVATE wft_core doctest_main Threads::Threads)

@@ -1,0 +1,220 @@
+#include <doctest.h>
+#include <memory>
+#include <string>
+#include <vector>
+#include "fake_ws_transport.h"
+#include "wfm_socket.h"
+
+// WfmSocket owns envelope handling and dispatch. Canned frames cover the
+// protocol without a socket.
+
+namespace
+{
+
+std::unique_ptr<FakeWsTransport> makeTransport(FakeWsTransport *&out)
+{
+    std::unique_ptr<FakeWsTransport> transport(new FakeWsTransport());
+    out = transport.get();
+    return transport;
+}
+
+std::string newOrderFrame(const std::string &id, const std::string &type, int platinum,
+                          int quantity, bool visible = true)
+{
+    return nlohmann::json{
+        {"route", "@wfm|event/subscriptions/newOrder"},
+        {"payload", {{"id", id},
+                     {"type", type},
+                     {"platinum", platinum},
+                     {"quantity", quantity},
+                     {"itemId", "item-1"},
+                     {"visible", visible},
+                     {"user", {{"id", "u1"}, {"status", "ingame"}}}}}}
+        .dump();
+}
+
+} // namespace
+
+TEST_CASE("connect uses the wss endpoint and the wfm subprotocol")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+
+    socket.connect();
+
+    CHECK(fake->connectCount() == 1);
+    CHECK(fake->url() == WS_API);
+    // The server rejects connections without this subprotocol.
+    CHECK(fake->subprotocol() == "wfm");
+    CHECK(socket.isConnected());
+}
+
+TEST_CASE("subscribeNewOrders sends a correlatable command")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    const std::string id = socket.subscribeNewOrders("pc", true);
+
+    REQUIRE(fake->sent().size() == 1);
+    const nlohmann::json sent = nlohmann::json::parse(fake->sent().at(0));
+    CHECK(sent.at("route") == "@wfm|cmd/subscribe/newOrders");
+    CHECK(sent.at("id") == id);
+    CHECK(sent.at("payload").at("platform") == "pc");
+    CHECK(sent.at("payload").at("crossplay") == true);
+}
+
+TEST_CASE("an omitted platform subscribes across all platforms")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    socket.subscribeNewOrders();
+
+    const nlohmann::json sent = nlohmann::json::parse(fake->sent().at(0));
+    CHECK_FALSE(sent.at("payload").contains("platform"));
+}
+
+TEST_CASE("unsubscribe resends the same filters")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    socket.subscribeNewOrders("pc", true);
+    socket.unsubscribeNewOrders("pc", true);
+
+    const nlohmann::json sent = nlohmann::json::parse(fake->sent().at(1));
+    CHECK(sent.at("route") == "@wfm|cmd/unsubscribe/newOrders");
+    CHECK(sent.at("payload").at("platform") == "pc");
+    CHECK(sent.at("payload").at("crossplay") == true);
+}
+
+TEST_CASE("new-order events are dispatched to the handler")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    std::vector<Order> received;
+    socket.onNewOrder([&received](const Order &order) { received.push_back(order); });
+
+    fake->queueFrame(newOrderFrame("o1", "sell", 20, 3));
+
+    CHECK(socket.poll(1));
+    REQUIRE(received.size() == 1);
+    CHECK(received[0].id == "o1");
+    CHECK(received[0].platinum == 20);
+    CHECK(received[0].user.isOnline());
+}
+
+TEST_CASE("hidden new-order events are not dispatched")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    size_t calls = 0;
+    socket.onNewOrder([&calls](const Order &) { ++calls; });
+
+    fake->queueFrame(newOrderFrame("o1", "sell", 20, 1, false));
+
+    socket.poll(1);
+    CHECK(calls == 0);
+}
+
+TEST_CASE("a command acknowledgement is counted, not dispatched")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    size_t orderCalls = 0;
+    socket.onNewOrder([&orderCalls](const Order &) { ++orderCalls; });
+
+    fake->queueFrame(
+        nlohmann::json{{"route", "@wfm|cmd/subscribe/newOrders:ok"}, {"id", "wft-1"}}.dump());
+
+    socket.poll(1);
+    CHECK(socket.acknowledgedCommands() == 1);
+    CHECK(orderCalls == 0);
+}
+
+TEST_CASE("command and protection errors are captured verbatim")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    fake->queueFrame(nlohmann::json{{"route", "@wfm|cmd/subscribe/newOrders:error"},
+                                    {"payload", "app.errors.alreadySubscribed"}}
+                         .dump());
+    socket.poll(1);
+    CHECK(socket.lastError() == "app.errors.alreadySubscribed");
+
+    fake->queueFrame(
+        nlohmann::json{{"route", "@wfm|protect/error"}, {"payload", "app.errors.userNotVerified"}}
+            .dump());
+    socket.poll(1);
+    CHECK(socket.lastError() == "app.errors.userNotVerified");
+}
+
+TEST_CASE("malformed frames are counted without killing the connection")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    std::vector<Order> received;
+    socket.onNewOrder([&received](const Order &order) { received.push_back(order); });
+
+    fake->queueFrame("not json at all");
+    socket.poll(1);
+    fake->queueFrame(nlohmann::json{{"no_route", true}}.dump());
+    socket.poll(1);
+    fake->queueFrame(newOrderFrame("o2", "buy", 5, 1));
+    socket.poll(1);
+
+    CHECK(socket.malformedFrames() == 2);
+    REQUIRE(received.size() == 1);
+    CHECK(received[0].id == "o2");
+}
+
+TEST_CASE("unknown routes are ignored rather than fatal")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    // The backend adds routes over time; a strict client would start throwing.
+    fake->queueFrame(
+        nlohmann::json{{"route", "@wfm|event/something/new"}, {"payload", {{"x", 1}}}}.dump());
+
+    CHECK_NOTHROW(socket.poll(1));
+    CHECK(socket.malformedFrames() == 0);
+}
+
+TEST_CASE("poll reports zero when no frame arrives")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    CHECK_FALSE(socket.poll(1));
+}
+
+TEST_CASE("sending on a closed socket throws")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+
+    CHECK_THROWS_WITH(socket.subscribeNewOrders(),
+                      doctest::Contains("closed connection"));
+}
+
+TEST_CASE("WfmSocket rejects a null transport")
+{
+    CHECK_THROWS_AS(WfmSocket(std::unique_ptr<WsTransport>()), std::invalid_argument);
+}

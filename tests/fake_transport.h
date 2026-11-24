@@ -85,6 +85,14 @@ private:
     std::deque<Reply> replies_;
     std::vector<Request> requests_;
 
+    /**
+     * @brief Replay the next queued reply.
+     *
+     * Mirrors HttpClient's contract: a non-2xx reply throws HttpStatusError
+     * carrying the body, so tests cover the same error path production takes.
+     * A fake that returned error bodies as normal responses would leave the
+     * status-handling code untested.
+     */
     Reply record(const std::string &method,
                  const std::string &url,
                  const nlohmann::json &payload,
@@ -102,6 +110,12 @@ private:
         const Reply reply = replies_.front();
         replies_.pop_front();
         response_headers = reply.headers;
+
+        if (reply.status < 200 || reply.status >= 300)
+        {
+            throw HttpStatusError(reply.status, reply.body);
+        }
+
         return reply;
     }
 };
