@@ -499,6 +499,68 @@ TEST_CASE("placeOrder rejects an unknown slug without sending a request")
     CHECK(fake->requests().empty());
 }
 
+TEST_CASE("placeOrder requires rank and subtype together when the item needs both")
+{
+    // Real `serration` carries both maxRank and subtypes, so a realistic order
+    // has to supply rank and subtype at once. The single-rule tests above use
+    // simplified fixtures and would not catch an interaction bug.
+    resetGlobalItemDb();
+    FakeTransport *fake = nullptr;
+    WarframeMarketAPI api(makeTransport(fake));
+    queueAndLoadItem(fake, api,
+                     {{"id", "id-serration"},
+                      {"slug", "serration"},
+                      {"maxRank", 10},
+                      {"subtypes", nlohmann::json::array({"regular", "atragraph"})}});
+    api.setJWT("jwt-abc123");
+
+    SUBCASE("rank without subtype is rejected")
+    {
+        PlaceOrderRequest request;
+        request.itemSlug = "serration";
+        request.platinum = 5;
+        request.quantity = 1;
+        request.hasRank = true;
+        request.rank = 3;
+
+        CHECK_THROWS_AS(api.authenticated().placeOrder(request),
+                        order_validation::ValidationError);
+        CHECK(fake->requests().size() == 1); // only the item load
+    }
+
+    SUBCASE("subtype without rank is rejected")
+    {
+        PlaceOrderRequest request;
+        request.itemSlug = "serration";
+        request.platinum = 5;
+        request.quantity = 1;
+        request.hasSubtype = true;
+        request.subtype = "regular";
+
+        CHECK_THROWS_AS(api.authenticated().placeOrder(request),
+                        order_validation::ValidationError);
+    }
+
+    SUBCASE("both together are sent")
+    {
+        fake->queueJson({{"error", nullptr}, {"data", {{"id", "order-8"}}}});
+
+        PlaceOrderRequest request;
+        request.itemSlug = "serration";
+        request.platinum = 5;
+        request.quantity = 1;
+        request.hasRank = true;
+        request.rank = 3;
+        request.hasSubtype = true;
+        request.subtype = "regular";
+
+        CHECK(api.authenticated().placeOrder(request) == "order-8");
+        const nlohmann::json &sent = fake->requests().at(1).payload;
+        CHECK(sent.at("rank") == 3);
+        CHECK(sent.at("subtype") == "regular");
+    }
+}
+
 TEST_CASE("placeOrder surfaces API error codes from the envelope")
 {
     resetGlobalItemDb();
