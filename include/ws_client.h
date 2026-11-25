@@ -28,7 +28,9 @@
  *
  * One easy handle owns the upgraded connection for its lifetime. There is no
  * reader thread and no auto-reconnect: the caller drives `receive` (usually
- * via `WfmSocket::poll`) and reconnects when a dead socket throws.
+ * via `WfmSocket::poll`) and reconnects when a dead socket throws. The header
+ * list outlives that handle: `curl_easy_cleanup` runs before
+ * `curl_slist_free_all`.
  *
  * Global curl state is initialised once through `wftEnsureCurlGlobalInit`.
  * This client does not take the HTTP 350 ms rate-limit lock.
@@ -199,6 +201,27 @@ class WsClient : public WsTransport
 public:
     WsClient() { wftEnsureCurlGlobalInit(); }
 
+    /// Releases the easy handle. Does not send a WebSocket close frame.
+    ~WsClient() noexcept { destroyHandle(); }
+
+    WsClient(const WsClient &) = delete;
+    WsClient &operator=(const WsClient &) = delete;
+    WsClient(WsClient &&) noexcept = default;
+
+    /// Drops this connection before taking `other`. A defaulted assignment
+    /// would move `headers_` first and free the slist under a live easy handle.
+    WsClient &operator=(WsClient &&other) noexcept
+    {
+        if (this != &other)
+        {
+            destroyHandle();
+            headers_ = std::move(other.headers_);
+            handle_ = std::move(other.handle_);
+            assembler_ = std::move(other.assembler_);
+        }
+        return *this;
+    }
+
     void connect(const std::string &url, const std::string &subprotocol) override
     {
         wftEnsureCurlGlobalInit();
@@ -207,16 +230,19 @@ public:
             throw std::runtime_error("WsClient: already connected; close() first");
         }
 
+        // The slist must outlive the easy handle. libcurl retains
+        // CURLOPT_HTTPHEADER until curl_easy_cleanup, not only through
+        // curl_easy_perform. Construct the list first so a failed handshake
+        // destroys the handle before the list.
+        auto headers = std::make_unique<ws_detail::CurlSlist>();
+        headers->append(std::format("Sec-WebSocket-Protocol: {}", subprotocol));
+        headers->append(std::format("User-Agent: {}", WFT_USER_AGENT));
+
         ws_detail::CurlHandle handle(curl_easy_init());
         if (!handle)
         {
             throw std::runtime_error("WsClient: failed to initialize curl");
         }
-
-        // Keep headers alive for the duration of curl_easy_perform.
-        auto headers = std::make_unique<ws_detail::CurlSlist>();
-        headers->append(std::format("Sec-WebSocket-Protocol: {}", subprotocol));
-        headers->append(std::format("User-Agent: {}", WFT_USER_AGENT));
 
         curl_easy_setopt(handle.get(), CURLOPT_URL, url.c_str());
         curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, headers->get());
@@ -357,11 +383,13 @@ public:
     }
 
 private:
-    ws_detail::CurlHandle handle_;
+    // Reverse destruction order is assembler_, handle_, headers_. Cleanup of
+    // the easy handle must run before curl_slist_free_all.
     std::unique_ptr<ws_detail::CurlSlist> headers_;
+    ws_detail::CurlHandle handle_;
     ws_detail::FrameAssembler assembler_;
 
-    void destroyHandle()
+    void destroyHandle() noexcept
     {
         handle_.reset();
         headers_.reset();
