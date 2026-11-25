@@ -1,10 +1,13 @@
 #ifndef WFM_SOCKET_H
 #define WFM_SOCKET_H
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <nlohmann/json.hpp>
 #include "constants.h"
 #include "types.h"
@@ -45,7 +48,7 @@
  * a `WsTransport` owns the read loop.
  *
  * @code
- * WfmSocket socket(std::unique_ptr<WsTransport>(new MyWsClient()));
+ * WfmSocket socket(std::make_unique<MyWsClient>());
  * socket.onNewOrder([](const Order &order) { ... });
  * socket.connect();
  * socket.subscribeNewOrders("pc", true);
@@ -68,11 +71,11 @@ public:
     }
 
     /// Connect, requesting the `wfm` subprotocol the server requires.
-    void connect() { transport_->connect(WS_API, "wfm"); }
+    void connect() { transport_->connect(std::string(WS_API), "wfm"); }
 
     void close() { transport_->close(); }
 
-    bool isConnected() const { return transport_->isConnected(); }
+    [[nodiscard]] bool isConnected() const { return transport_->isConnected(); }
 
     /**
      * @brief Subscribe to newly created visible orders.
@@ -86,13 +89,13 @@ public:
      * filters are part of the subscription identity, so the same values must be
      * sent again to unsubscribe.
      */
-    std::string subscribeNewOrders(const std::string &platform = "", bool crossplay = true)
+    std::string subscribeNewOrders(std::string_view platform = "", bool crossplay = true)
     {
         return send("@wfm|cmd/subscribe/newOrders", filters(platform, crossplay));
     }
 
     /// Unsubscribe using the same filters given to `subscribeNewOrders`.
-    std::string unsubscribeNewOrders(const std::string &platform = "", bool crossplay = true)
+    std::string unsubscribeNewOrders(std::string_view platform = "", bool crossplay = true)
     {
         return send("@wfm|cmd/unsubscribe/newOrders", filters(platform, crossplay));
     }
@@ -104,7 +107,7 @@ public:
      * @throws std::logic_error Always: the route is not registered on the
      *         server, so nothing is sent.
      */
-    void subscribeItemOrders(const std::string &) { unregisteredRoute(); }
+    void subscribeItemOrders(std::string_view) { unregisteredRoute(); }
 
     /**
      * @brief Subscribe to one user's orders.
@@ -113,7 +116,7 @@ public:
      * @throws std::logic_error Always: the route is not registered on the
      *         server, so nothing is sent.
      */
-    void subscribeProfileOrders(const std::string &) { unregisteredRoute(); }
+    void subscribeProfileOrders(std::string_view) { unregisteredRoute(); }
 
     void onNewOrder(NewOrderHandler handler) { newOrderHandler_ = std::move(handler); }
 
@@ -139,7 +142,7 @@ public:
      * For tests, and for callers that multiplex this feed onto their own
      * socket.
      */
-    void handle(const std::string &frame)
+    void handle(std::string_view frame)
     {
         nlohmann::json message;
         try
@@ -161,12 +164,12 @@ public:
         const std::string route = message.at("route").get<std::string>();
 
         // Command replies: the route carries a :ok or :error suffix.
-        if (endsWith(route, ":ok"))
+        if (route.ends_with(":ok"))
         {
             ++acknowledged_;
             return;
         }
-        if (endsWith(route, ":error"))
+        if (route.ends_with(":error"))
         {
             lastError_ = payloadText(message);
             return;
@@ -174,9 +177,10 @@ public:
 
         if (route == "@wfm|event/subscriptions/newOrder")
         {
-            if (message.contains("payload") && message.at("payload").is_object())
+            if (const auto payload = message.find("payload");
+                payload != message.end() && payload->is_object())
             {
-                const Order order = wfm_json::parseOrder(message.at("payload"));
+                const Order order = wfm_json::parseOrder(*payload);
                 if (newOrderHandler_ && order.visible)
                 {
                     newOrderHandler_(order);
@@ -195,37 +199,35 @@ public:
     }
 
     /// Last command or protection error code, or empty when none seen.
-    const std::string &lastError() const { return lastError_; }
+    [[nodiscard]] const std::string &lastError() const { return lastError_; }
 
     /// Frames that were not valid message envelopes.
-    size_t malformedFrames() const { return malformed_; }
+    [[nodiscard]] std::size_t malformedFrames() const { return malformed_; }
 
     /// Commands the server acknowledged.
-    size_t acknowledgedCommands() const { return acknowledged_; }
+    [[nodiscard]] std::size_t acknowledgedCommands() const { return acknowledged_; }
 
 private:
     std::unique_ptr<WsTransport> transport_;
     NewOrderHandler newOrderHandler_;
     std::string lastError_;
-    size_t malformed_ = 0;
-    size_t acknowledged_ = 0;
+    std::size_t malformed_ = 0;
+    std::size_t acknowledged_ = 0;
     unsigned nextId_ = 1;
-
-    static bool endsWith(const std::string &value, const char *suffix)
-    {
-        const size_t length = std::char_traits<char>::length(suffix);
-        return value.size() >= length &&
-               value.compare(value.size() - length, length, suffix) == 0;
-    }
 
     static std::string payloadText(const nlohmann::json &message)
     {
-        return wfm_json::hasKey(message, "payload") && message.at("payload").is_string()
-                   ? message.at("payload").get<std::string>()
-                   : std::string("unknown");
+        // Tolerant on purpose: an error frame with an unexpected payload shape
+        // must not throw out of handle().
+        const auto payload = message.find("payload");
+        if (payload == message.end() || !payload->is_string())
+        {
+            return "unknown";
+        }
+        return payload->get<std::string>();
     }
 
-    static nlohmann::json filters(const std::string &platform, bool crossplay)
+    static nlohmann::json filters(std::string_view platform, bool crossplay)
     {
         nlohmann::json payload = {{"crossplay", crossplay}};
         if (!platform.empty())
@@ -235,7 +237,7 @@ private:
         return payload;
     }
 
-    std::string send(const char *route, const nlohmann::json &payload)
+    std::string send(std::string_view route, const nlohmann::json &payload)
     {
         const std::string id = "wft-" + std::to_string(nextId_++);
         transport_->sendText(
@@ -243,7 +245,7 @@ private:
         return id;
     }
 
-    static void unregisteredRoute()
+    [[noreturn]] static void unregisteredRoute()
     {
         // shortcut: server route not registered, remove the throw when the docs
         // list the route as active.

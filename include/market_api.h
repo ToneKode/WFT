@@ -1,11 +1,16 @@
 #ifndef MARKET_API_H
 #define MARKET_API_H
 
-#include <algorithm>
 #include <cstddef>
+#include <format>
+#include <iterator>
 #include <memory>
+#include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "api_error.h"
@@ -15,6 +20,20 @@
 #include "order_book.h"
 #include "types.h"
 #include "wfm_json.h"
+
+// ==================== Request Options ====================
+/**
+ * @brief Optional rank filters for `MarketAPI::topOrdersForItem()`.
+ *
+ * `rankLt` wins over `rank`, as the API does: a caller that sets both gets the
+ * "lower than" filter rather than a silently ignored field. An absent value
+ * means "no filter", which is why this is `std::optional` and not `-1`.
+ */
+struct RankFilter
+{
+    std::optional<int> rank = std::nullopt;
+    std::optional<int> rankLt = std::nullopt;
+};
 
 /**
  * @file market_api.h
@@ -26,7 +45,7 @@
 class MarketAPI
 {
 public:
-    MarketAPI() : http_client_(new HttpClient()) {}
+    MarketAPI() : http_client_(std::make_unique<HttpClient>()) {}
 
     /**
      * @brief Construct with an alternate transport (tests, proxies, stubs).
@@ -45,7 +64,7 @@ public:
      * @brief Set the platform, language, and crossplay scope for later calls.
      * @param newPlatform One of pc, ps4, xbox, switch, mobile.
      */
-    void setContext(const std::string &newPlatform, const std::string &newLanguage = "en",
+    void setContext(std::string_view newPlatform, std::string_view newLanguage = "en",
                     bool crossplay = true)
     {
         platform_ = newPlatform;
@@ -58,15 +77,13 @@ public:
      */
     std::vector<Item> items()
     {
-        const json root = get(V2_API + "/items", "Failed to list items");
-        const json &data = *wfm_json::requireDataArray(root, "Failed to list items");
+        constexpr std::string_view context = "Failed to list items";
+        const json root = get(std::format("{}/items", V2_API), context);
+        const json &data = wfm_json::requireDataArray(root, context);
 
         std::vector<Item> items;
         items.reserve(data.size());
-        for (const auto &entry : data)
-        {
-            items.push_back(wfm_json::parseItem(entry));
-        }
+        std::ranges::transform(data, std::back_inserter(items), wfm_json::parseItem);
         return items;
     }
 
@@ -79,8 +96,8 @@ public:
      */
     struct Versions
     {
-        std::string itemsHash; ///< `data.collections.items`, base64.
-        std::string updatedAt; ///< `data.updatedAt`, ISO 8601.
+        std::string itemsHash = {}; ///< `data.collections.items`, base64.
+        std::string updatedAt = {}; ///< `data.updatedAt`, ISO 8601.
     };
 
     /**
@@ -91,21 +108,26 @@ public:
      */
     Versions versions()
     {
-        const json root = get(V2_API + "/versions", "Failed to read versions");
-        const json &data = *wfm_json::requireDataObject(root, "Failed to read versions");
+        constexpr std::string_view context = "Failed to read versions";
+        const json root = get(std::format("{}/versions", V2_API), context);
+        const json &data = wfm_json::requireDataObject(root, context);
 
         Versions result;
-        if (data.contains("collections") && data.at("collections").is_object())
+        // A wrong-typed field must not throw: an empty hash just means
+        // "refresh", which is the safe outcome.
+        if (const auto collections = data.find("collections");
+            collections != data.end() && collections->is_object())
         {
-            const json &collections = data.at("collections");
-            if (collections.contains("items") && collections.at("items").is_string())
+            if (const auto items = collections->find("items");
+                items != collections->end() && items->is_string())
             {
-                result.itemsHash = collections.at("items").get<std::string>();
+                result.itemsHash = items->get<std::string>();
             }
         }
-        if (data.contains("updatedAt") && data.at("updatedAt").is_string())
+        if (const auto updatedAt = data.find("updatedAt");
+            updatedAt != data.end() && updatedAt->is_string())
         {
-            result.updatedAt = data.at("updatedAt").get<std::string>();
+            result.updatedAt = updatedAt->get<std::string>();
         }
         return result;
     }
@@ -114,10 +136,12 @@ public:
      * @brief One item by slug.
      * @throws ApiError carrying `app.item.notFound` for an unknown slug.
      */
-    Item item(const std::string &slug)
+    Item item(std::string_view slug)
     {
-        const json root = get(V2_API + "/item/" + slug, "Failed to get item");
-        return wfm_json::parseItem(*wfm_json::requireDataObject(root, "Failed to get item"));
+        constexpr std::string_view context = "Failed to get item";
+        const json root = get(std::format("{}/item/{}", V2_API, slug), context);
+        const json &data = wfm_json::requireDataObject(root, context);
+        return wfm_json::parseItem(data);
     }
 
     /**
@@ -126,14 +150,16 @@ public:
      * Do not rank the result by `platinum`: that field is a bundle total. Use
      * `bookForItem()` or `Order::platinumPerUnit()`.
      */
-    std::vector<Order> ordersForItem(const std::string &slug)
+    std::vector<Order> ordersForItem(std::string_view slug)
     {
-        const json root = get(V2_API + "/orders/item/" + slug, "Failed to list item orders");
-        return parseOrders(*wfm_json::requireDataArray(root, "Failed to list item orders"));
+        constexpr std::string_view context = "Failed to list item orders";
+        const json root = get(std::format("{}/orders/item/{}", V2_API, slug), context);
+        const json &data = wfm_json::requireDataArray(root, context);
+        return parseOrders(data);
     }
 
     /// Fetch an item's orders and index them, in one call.
-    OrderBook bookForItem(const std::string &slug)
+    OrderBook bookForItem(std::string_view slug)
     {
         OrderBook book;
         book.load(ordersForItem(slug));
@@ -143,8 +169,8 @@ public:
     /// Up to 5 sell and 5 buy orders as ranked by the server.
     struct TopOrders
     {
-        std::vector<Order> sell;
-        std::vector<Order> buy;
+        std::vector<Order> sell = {};
+        std::vector<Order> buy = {};
     };
 
     /**
@@ -155,8 +181,8 @@ public:
      */
     struct ItemListings
     {
-        std::string itemSlug;
-        std::vector<Order> sells;
+        std::string itemSlug = {};
+        std::vector<Order> sells = {};
     };
 
     /**
@@ -176,19 +202,21 @@ public:
      * Prefer `topOrdersForItem()` for Endo and Ayatan star items, whose ranking
      * has server-side rules `OrderBook` does not replicate.
      */
-    std::vector<ItemListings> bestSells(const std::vector<std::string> &slugs, size_t limit = 5)
+    std::vector<ItemListings> bestSells(const std::vector<std::string> &slugs,
+                                        std::size_t limit = 5)
     {
         std::vector<ItemListings> listings;
         listings.reserve(slugs.size());
+
         for (const auto &slug : slugs)
         {
             const OrderBook book = bookForItem(slug);
+            const std::vector<Order> &sells = book.sells();
+            const std::size_t keep = (limit == 0) ? sells.size() : (std::min)(limit, sells.size());
 
             ItemListings entry;
             entry.itemSlug = slug;
-            const std::vector<Order> &sells = book.sells();
-            const size_t keep = (limit == 0) ? sells.size() : (std::min)(limit, sells.size());
-            entry.sells.assign(sells.begin(), sells.begin() + static_cast<std::ptrdiff_t>(keep));
+            std::ranges::copy_n(sells.begin(), keep, std::back_inserter(entry.sells));
             listings.push_back(std::move(entry));
         }
         return listings;
@@ -200,33 +228,35 @@ public:
      * Worth preferring over a local sort for Endo and star items, whose
      * ranking has extra rules this library does not replicate.
      *
-     * @param rank Optional exact rank filter.
-     * @param rankLt Optional lower-than-rank filter; takes precedence over
+     * @param slug Item slug.
+     * @param filter Optional rank filters; `rankLt` takes precedence over
      *        `rank`, as the API does.
      */
-    TopOrders topOrdersForItem(const std::string &slug, int rank = -1, int rankLt = -1)
+    TopOrders topOrdersForItem(std::string_view slug, const RankFilter &filter = {})
     {
-        std::string url = V2_API + "/orders/item/" + slug + "/top";
-        if (rankLt >= 0)
+        constexpr std::string_view context = "Failed to list top orders";
+
+        std::string url = std::format("{}/orders/item/{}/top", V2_API, slug);
+        if (filter.rankLt)
         {
-            url += "?rankLt=" + std::to_string(rankLt);
+            url += std::format("?rankLt={}", *filter.rankLt);
         }
-        else if (rank >= 0)
+        else if (filter.rank)
         {
-            url += "?rank=" + std::to_string(rank);
+            url += std::format("?rank={}", *filter.rank);
         }
 
-        const json root = get(url, "Failed to list top orders");
-        const json &data = *wfm_json::requireDataObject(root, "Failed to list top orders");
+        const json root = get(url, context);
+        const json &data = wfm_json::requireDataObject(root, context);
 
         TopOrders top;
-        if (data.contains("sell") && data.at("sell").is_array())
+        if (const auto sell = data.find("sell"); sell != data.end() && sell->is_array())
         {
-            top.sell = parseOrders(data.at("sell"));
+            top.sell = parseOrders(*sell);
         }
-        if (data.contains("buy") && data.at("buy").is_array())
+        if (const auto buy = data.find("buy"); buy != data.end() && buy->is_array())
         {
-            top.buy = parseOrders(data.at("buy"));
+            top.buy = parseOrders(*buy);
         }
         return top;
     }
@@ -239,8 +269,9 @@ public:
      */
     std::vector<Order> recentOrders()
     {
-        const json root = get(V2_API + "/orders/recent", "Failed to list recent orders");
-        return parseOrders(*wfm_json::requireDataArray(root, "Failed to list recent orders"));
+        constexpr std::string_view context = "Failed to list recent orders";
+        const json root = get(std::format("{}/orders/recent", V2_API), context);
+        return parseOrders(wfm_json::requireDataArray(root, context));
     }
 
 private:
@@ -266,12 +297,12 @@ private:
      * A 4xx carries the useful code in its body, so the body is parsed before
      * the status is reported: "app.item.notFound" beats "HTTP 404".
      */
-    json get(const std::string &url, const std::string &context)
+    json get(std::string_view url, std::string_view context)
     {
         std::string body;
         try
         {
-            body = http_client_->Get(url, contextHeaders());
+            body = http_client_->Get(std::string(url), contextHeaders());
         }
         catch (const HttpStatusError &error)
         {
@@ -285,14 +316,14 @@ private:
         }
         catch (const json::parse_error &)
         {
-            throw std::runtime_error(context + ": response was not valid JSON");
+            throw std::runtime_error(std::format("{}: response was not valid JSON", context));
         }
         throwIfApiError(root, context);
         return root;
     }
 
     /// Unwrap the API error code from a failed response body.
-    void throwFromErrorBody(const HttpStatusError &error, const std::string &context)
+    static void throwFromErrorBody(const HttpStatusError &error, std::string_view context)
     {
         try
         {
@@ -305,17 +336,14 @@ private:
         catch (const json::parse_error &)
         {
         }
-        throw std::runtime_error(context + ": HTTP " + std::to_string(error.status()));
+        throw std::runtime_error(std::format("{}: HTTP {}", context, error.status()));
     }
 
-    std::vector<Order> parseOrders(const json &array) const
+    static std::vector<Order> parseOrders(const json &array)
     {
         std::vector<Order> orders;
         orders.reserve(array.size());
-        for (const auto &entry : array)
-        {
-            orders.push_back(wfm_json::parseOrder(entry));
-        }
+        std::ranges::transform(array, std::back_inserter(orders), wfm_json::parseOrder);
         return orders;
     }
 };

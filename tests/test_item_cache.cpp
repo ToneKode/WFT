@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include "fake_transport.h"
@@ -14,9 +15,10 @@
 namespace
 {
 
-std::unique_ptr<FakeTransport> makeTransport(FakeTransport *&out)
+template <typename Fake>
+std::unique_ptr<Fake> makeTransport(Fake *&out)
 {
-    std::unique_ptr<FakeTransport> transport(new FakeTransport());
+    auto transport = std::make_unique<Fake>();
     out = transport.get();
     return transport;
 }
@@ -79,7 +81,7 @@ TEST_CASE("versions() exposes the items hash and updatedAt")
 
     CHECK(versions.itemsHash == "MjAyNi0xMC0yOFQwMzo1MjowOQ==");
     CHECK(versions.updatedAt == "2026-10-28T03:52:09Z");
-    CHECK(fake->requests().at(0).url == V2_API + "/versions");
+    CHECK(fake->requests().at(0).url == std::string(V2_API) + "/versions");
 }
 
 TEST_CASE("versions() tolerates a missing collections object")
@@ -125,17 +127,50 @@ TEST_CASE("the item cache round-trips optional item fields")
     CHECK(loaded[0].id == "id-khora_prime_set");
     CHECK(loaded[0].itemName == "Name of khora_prime_set");
     CHECK(loaded[0].requiresRank());
+    // A maxRank of 0 is present, not absent: the exact case the hasX flags
+    // could not tell apart from a missing field.
+    REQUIRE(loaded[0].maxRank);
+    CHECK(*loaded[0].maxRank == 0);
     CHECK(loaded[0].requiresPerTrade());
-    CHECK(loaded[0].hasTradingTax);
+    REQUIRE(loaded[0].tradingTax);
+    CHECK(*loaded[0].tradingTax == 4000);
 
     CHECK(loaded[1].slug == "axi_a1_relic");
     REQUIRE(loaded[1].subtypes.size() == 2);
     CHECK(loaded[1].subtypes[1] == "exceptional");
     CHECK(loaded[1].requiresStars());
-    CHECK(loaded[1].hasMaxAmberStars);
-    CHECK(loaded[1].maxAmberStars == 3);
-    CHECK(loaded[1].hasSetRoot);
-    CHECK(loaded[1].setRoot);
+    REQUIRE(loaded[1].maxAmberStars);
+    CHECK(*loaded[1].maxAmberStars == 3);
+    REQUIRE(loaded[1].setRoot);
+    CHECK(*loaded[1].setRoot);
+    // Absent fields survive the round trip as absent, not as zero.
+    CHECK_FALSE(loaded[1].requiresRank());
+    CHECK_FALSE(loaded[1].tradingTax);
+}
+
+TEST_CASE("an item without optional metadata keeps it absent through the cache")
+{
+    const std::string path = tempPath("sparse");
+    removeFile(path);
+
+    const std::vector<Item> saved = {wfm_json::parseItem(
+        {{"id", "i1"}, {"slug", "bare_item"}, {"tradable", true}})};
+    item_cache::saveItems(path, saved, "h");
+
+    std::string hash;
+    const std::vector<Item> loaded = item_cache::loadItems(path, hash);
+    removeFile(path);
+
+    REQUIRE(loaded.size() == 1);
+    CHECK(loaded[0].slug == "bare_item");
+    CHECK_FALSE(loaded[0].maxRank);
+    CHECK_FALSE(loaded[0].maxCharges);
+    CHECK_FALSE(loaded[0].bulkTradable);
+    CHECK_FALSE(loaded[0].setRoot);
+    CHECK_FALSE(loaded[0].tradingTax);
+    CHECK_FALSE(loaded[0].requiresRank());
+    CHECK_FALSE(loaded[0].requiresPerTrade());
+    CHECK_FALSE(loaded[0].requiresStars());
 }
 
 TEST_CASE("a missing cache file reports the path instead of returning nothing")
@@ -144,8 +179,7 @@ TEST_CASE("a missing cache file reports the path instead of returning nothing")
     removeFile(path);
 
     std::string hash;
-    CHECK_THROWS_WITH(item_cache::loadItems(path, hash),
-                      doctest::Contains("cannot open"));
+    CHECK_THROWS_WITH(item_cache::loadItems(path, hash), doctest::Contains("cannot open"));
 }
 
 TEST_CASE("a corrupt cache file fails loudly rather than loading empty")
@@ -158,8 +192,7 @@ TEST_CASE("a corrupt cache file fails loudly rather than loading empty")
     }
 
     std::string hash;
-    CHECK_THROWS_WITH(item_cache::loadItems(path, hash),
-                      doctest::Contains("not an item cache"));
+    CHECK_THROWS_WITH(item_cache::loadItems(path, hash), doctest::Contains("not an item cache"));
     removeFile(path);
 
     {
@@ -224,8 +257,8 @@ TEST_CASE("bestSells ranks per unit across several items with one request each")
     CHECK(listings[1].sells[0].platinumPerUnit() == doctest::Approx(5.0));
 
     REQUIRE(fake->requests().size() == 2);
-    CHECK(fake->requests().at(0).url == V2_API + "/orders/item/khora_prime_set");
-    CHECK(fake->requests().at(1).url == V2_API + "/orders/item/axi_a1_relic");
+    CHECK(fake->requests().at(0).url == std::string(V2_API) + "/orders/item/khora_prime_set");
+    CHECK(fake->requests().at(1).url == std::string(V2_API) + "/orders/item/axi_a1_relic");
 }
 
 TEST_CASE("bestSells keeps every listing when the limit is zero")
