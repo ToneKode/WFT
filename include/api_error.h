@@ -1,8 +1,11 @@
 #ifndef API_ERROR_H
 #define API_ERROR_H
 
+#include <format>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
 
@@ -40,10 +43,13 @@ public:
           inputCodes_(std::move(input_codes)) {}
 
     /// Request-level error codes, e.g. `app.errors.unauthorized`.
-    const std::vector<std::string> &requestCodes() const { return requestCodes_; }
+    [[nodiscard]] const std::vector<std::string> &requestCodes() const
+    {
+        return requestCodes_;
+    }
 
     /// `field=code` pairs such as `platinum=app.field.tooSmall`.
-    const std::vector<std::string> &inputCodes() const { return inputCodes_; }
+    [[nodiscard]] const std::vector<std::string> &inputCodes() const { return inputCodes_; }
 
 private:
     std::vector<std::string> requestCodes_;
@@ -53,37 +59,64 @@ private:
 namespace api_error_detail
 {
 
+/// Append every string in `node`, whether it is a bare string or an array.
 inline void collectStrings(const nlohmann::json &node, std::vector<std::string> &out)
 {
-    if (node.is_array())
-    {
-        for (const auto &entry : node)
-        {
-            if (entry.is_string())
-            {
-                out.push_back(entry.get<std::string>());
-            }
-        }
-    }
-    else if (node.is_string())
+    if (node.is_string())
     {
         out.push_back(node.get<std::string>());
+        return;
+    }
+    if (!node.is_array())
+    {
+        return;
+    }
+
+    for (const auto &entry : node)
+    {
+        if (entry.is_string())
+        {
+            out.push_back(entry.get<std::string>());
+        }
     }
 }
 
+/// Append `key=value` for each string-valued entry of an `inputs` object.
 inline void collectInputs(const nlohmann::json &node, std::vector<std::string> &out)
 {
     if (!node.is_object())
     {
         return;
     }
-    for (auto it = node.begin(); it != node.end(); ++it)
+
+    for (const auto &[field, value] : node.items())
     {
-        if (it.value().is_string())
+        if (value.is_string())
         {
-            out.push_back(it.key() + "=" + it.value().get<std::string>());
+            out.push_back(std::format("{}={}", field, value.get<std::string>()));
         }
     }
+}
+
+/// Join codes into one readable message body: `a, b, c`.
+inline std::string joinCodes(const std::vector<std::string> &request_codes,
+                             const std::vector<std::string> &input_codes)
+{
+    std::vector<std::string_view> all;
+    all.reserve(request_codes.size() + input_codes.size());
+    all.insert(all.end(), request_codes.begin(), request_codes.end());
+    all.insert(all.end(), input_codes.begin(), input_codes.end());
+
+    std::string joined;
+    for (const std::string_view code : all)
+    {
+        if (!joined.empty())
+        {
+            joined += ", ";
+        }
+        joined += code;
+    }
+    return joined;
 }
 
 } // namespace api_error_detail
@@ -95,7 +128,7 @@ inline void collectInputs(const nlohmann::json &node, std::vector<std::string> &
  * Returns quietly when the payload reports no error, which includes the
  * success case where `error` is `null`.
  */
-inline void throwIfApiError(const nlohmann::json &root, const std::string &context)
+inline void throwIfApiError(const nlohmann::json &root, std::string_view context)
 {
     if (!root.is_object())
     {
@@ -103,9 +136,9 @@ inline void throwIfApiError(const nlohmann::json &root, const std::string &conte
     }
 
     const nlohmann::json *payload = nullptr;
-    if (root.contains("error") && root.at("error").is_object())
+    if (const auto error = root.find("error"); error != root.end() && error->is_object())
     {
-        payload = &root.at("error");
+        payload = &*error;
     }
     else if (root.contains("request") || root.contains("inputs"))
     {
@@ -119,13 +152,13 @@ inline void throwIfApiError(const nlohmann::json &root, const std::string &conte
 
     std::vector<std::string> request_codes;
     std::vector<std::string> input_codes;
-    if (payload->contains("request"))
+    if (const auto request = payload->find("request"); request != payload->end())
     {
-        api_error_detail::collectStrings(payload->at("request"), request_codes);
+        api_error_detail::collectStrings(*request, request_codes);
     }
-    if (payload->contains("inputs"))
+    if (const auto inputs = payload->find("inputs"); inputs != payload->end())
     {
-        api_error_detail::collectInputs(payload->at("inputs"), input_codes);
+        api_error_detail::collectInputs(*inputs, input_codes);
     }
 
     if (request_codes.empty() && input_codes.empty())
@@ -133,19 +166,12 @@ inline void throwIfApiError(const nlohmann::json &root, const std::string &conte
         return;
     }
 
-    std::string message = context + ": ";
-    bool first = true;
-    for (const auto &code : request_codes)
-    {
-        message += (first ? "" : ", ") + code;
-        first = false;
-    }
-    for (const auto &code : input_codes)
-    {
-        message += (first ? "" : ", ") + code;
-        first = false;
-    }
-
+    // Build the message into a local first: format arguments and the two
+    // std::move arguments of the throw below have unspecified evaluation order,
+    // so reading the codes inside the throw expression could see them already
+    // moved from.
+    std::string message = std::format("{}: {}", context,
+                                      api_error_detail::joinCodes(request_codes, input_codes));
     throw ApiError(message, std::move(request_codes), std::move(input_codes));
 }
 

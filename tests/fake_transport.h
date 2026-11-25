@@ -1,10 +1,10 @@
 #ifndef TESTS_FAKE_TRANSPORT_H
 #define TESTS_FAKE_TRANSPORT_H
 
+#include <cstddef>
 #include <deque>
-#include <map>
-#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "http_transport.h"
@@ -35,23 +35,19 @@ public:
     };
 
     // Queue the reply for the next request.
-    void queueReply(const std::string &body,
-                    Headers headers = Headers(),
-                    long status = 200)
+    void queueReply(std::string body, Headers headers = Headers(), long status = 200)
     {
-        replies_.push_back(Reply{body, std::move(headers), status});
+        replies_.emplace_back(std::move(body), std::move(headers), status);
     }
 
-    void queueJson(const nlohmann::json &body,
-                   Headers headers = Headers(),
-                   long status = 200)
+    void queueJson(const nlohmann::json &body, Headers headers = Headers(), long status = 200)
     {
         queueReply(body.dump(), std::move(headers), status);
     }
 
-    const std::vector<Request> &requests() const { return requests_; }
+    [[nodiscard]] const std::vector<Request> &requests() const { return requests_; }
 
-    size_t pendingReplies() const { return replies_.size(); }
+    [[nodiscard]] std::size_t pendingReplies() const { return replies_.size(); }
 
     std::string Get(const std::string &url, const Headers &headers) override
     {
@@ -71,21 +67,17 @@ private:
      * A fake that returned error bodies as normal responses would leave the
      * status-handling code untested.
      */
-    Reply record(const std::string &method,
-                 const std::string &url,
-                 const nlohmann::json &payload,
-                 const Headers &headers,
-                 Headers &response_headers)
+    Reply record(const std::string &method, const std::string &url,
+                 const nlohmann::json &payload, const Headers &headers, Headers &response_headers)
     {
         requests_.push_back(Request{method, url, payload, headers});
 
         if (replies_.empty())
         {
-            throw std::runtime_error("FakeTransport: no queued reply for " +
-                                     method + " " + url);
+            throw std::runtime_error("FakeTransport: no queued reply for " + method + " " + url);
         }
 
-        const Reply reply = replies_.front();
+        Reply reply = std::move(replies_.front());
         replies_.pop_front();
         response_headers = reply.headers;
 

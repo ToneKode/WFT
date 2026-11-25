@@ -1,4 +1,6 @@
 #include <doctest.h>
+#include <optional>
+#include <string>
 #include "order_book.h"
 
 // The price normalisation here is load-bearing: `platinum` is a bundle total,
@@ -8,22 +10,18 @@ namespace
 {
 
 Order makeOrder(const std::string &id, const std::string &type, int platinum, int quantity,
-                int perTrade = 0, const std::string &status = "ingame", bool visible = true)
+                std::optional<int> perTrade = std::nullopt, const std::string &status = "ingame",
+                bool visible = true)
 {
-    Order order;
-    order.id = id;
-    order.orderType = type;
-    order.platinum = platinum;
-    order.quantity = quantity;
-    order.visible = visible;
-    if (perTrade > 0)
-    {
-        order.hasPerTrade = true;
-        order.perTrade = perTrade;
-    }
-    order.hasUser = true;
-    order.user.status = status;
-    return order;
+    return Order{
+        .id = id,
+        .orderType = type,
+        .platinum = platinum,
+        .quantity = quantity,
+        .visible = visible,
+        .perTrade = perTrade,
+        .user = UserShort{.id = "u1", .status = status},
+    };
 }
 
 } // namespace
@@ -35,16 +33,23 @@ TEST_CASE("platinumPerUnit divides a bundle price by perTrade")
     CHECK(makeOrder("b", "buy", 5, 1).platinumPerUnit() == doctest::Approx(5.0));
 }
 
+TEST_CASE("an absent or zero perTrade means one unit, not a divide by zero")
+{
+    CHECK(makeOrder("absent", "sell", 12, 1).platinumPerUnit() == doctest::Approx(12.0));
+    CHECK(makeOrder("zero", "sell", 12, 1, 0).platinumPerUnit() == doctest::Approx(12.0));
+    CHECK(makeOrder("negative", "sell", 12, 1, -3).platinumPerUnit() == doctest::Approx(12.0));
+}
+
 TEST_CASE("bulk sellers are not made to look expensive by raw price")
 {
     // Sorting on platinum would rank the 36p bundle worst, though it is cheapest.
     OrderBook book;
-    book.load({makeOrder("bulk", "sell", 36, 6, 6),      // 6 per unit
-               makeOrder("single", "sell", 10, 1)});     // 10 per unit
+    book.load({makeOrder("bulk", "sell", 36, 6, 6), // 6 per unit
+               makeOrder("single", "sell", 10, 1)}); // 10 per unit
 
-    double best = 0.0;
-    REQUIRE(book.bestSell(best));
-    CHECK(best == doctest::Approx(6.0));
+    const std::optional<double> best = book.bestSell();
+    REQUIRE(best);
+    CHECK(*best == doctest::Approx(6.0));
     CHECK(book.sells().front().id == "bulk");
 }
 
@@ -71,7 +76,7 @@ TEST_CASE("hidden orders are excluded")
 {
     OrderBook book;
     book.load({makeOrder("visible", "sell", 10, 1),
-               makeOrder("hidden", "sell", 1, 1, 0, "ingame", false)});
+               makeOrder("hidden", "sell", 1, 1, std::nullopt, "ingame", false)});
 
     REQUIRE(book.sells().size() == 1);
     CHECK(book.sells().front().id == "visible");
@@ -82,24 +87,25 @@ TEST_CASE("offline users do not set the price")
     // The server filters offline users from /top; a book that let them through
     // would disagree with the endpoint it mirrors.
     OrderBook book;
-    book.load({makeOrder("offline", "sell", 1, 1, 0, "offline"),
+    book.load({makeOrder("offline", "sell", 1, 1, std::nullopt, "offline"),
                makeOrder("online", "sell", 50, 1)});
 
-    double best = 0.0;
-    REQUIRE(book.bestSell(best));
-    CHECK(best == doctest::Approx(50.0));
+    const std::optional<double> best = book.bestSell();
+    REQUIRE(best);
+    CHECK(*best == doctest::Approx(50.0));
 }
 
 TEST_CASE("orders without an embedded user are not filtered out")
 {
     // /orders/my omits the owner, so absence of a user is not proof of being
     // offline.
-    Order owned;
-    owned.id = "mine";
-    owned.orderType = "sell";
-    owned.platinum = 7;
-    owned.quantity = 1;
-    owned.visible = true;
+    const Order owned{
+        .id = "mine",
+        .orderType = "sell",
+        .platinum = 7,
+        .quantity = 1,
+        .visible = true,
+    };
 
     OrderBook book;
     book.load({owned});
@@ -111,9 +117,9 @@ TEST_CASE("spread reports the gap between best buy and best sell")
     OrderBook book;
     book.load({makeOrder("s", "sell", 20, 1), makeOrder("b", "buy", 15, 1)});
 
-    double out = 0.0;
-    REQUIRE(book.spread(out));
-    CHECK(out == doctest::Approx(5.0));
+    const std::optional<double> out = book.spread();
+    REQUIRE(out);
+    CHECK(*out == doctest::Approx(5.0));
 }
 
 TEST_CASE("spread is unavailable when a side is empty, and negative when crossed")
@@ -121,14 +127,14 @@ TEST_CASE("spread is unavailable when a side is empty, and negative when crossed
     OrderBook book;
     book.load({makeOrder("s", "sell", 20, 1)});
 
-    double out = 0.0;
-    CHECK_FALSE(book.spread(out));
-    CHECK_FALSE(book.bestBuy(out));
-    CHECK(book.bestSell(out));
+    CHECK_FALSE(book.spread());
+    CHECK_FALSE(book.bestBuy());
+    REQUIRE(book.bestSell());
 
     book.load({makeOrder("s", "sell", 10, 1), makeOrder("b", "buy", 12, 1)});
-    REQUIRE(book.spread(out));
-    CHECK(out < 0.0);
+    const std::optional<double> out = book.spread();
+    REQUIRE(out);
+    CHECK(*out < 0.0);
 }
 
 TEST_CASE("loading again replaces the previous book")
@@ -147,8 +153,7 @@ TEST_CASE("an empty list produces an empty book")
     OrderBook book;
     book.load({});
 
-    double out = 0.0;
     CHECK(book.sells().empty());
-    CHECK_FALSE(book.bestSell(out));
-    CHECK_FALSE(book.bestBuy(out));
+    CHECK_FALSE(book.bestSell());
+    CHECK_FALSE(book.bestBuy());
 }

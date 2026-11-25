@@ -2,6 +2,8 @@
 #define ORDER_BOOK_H
 
 #include <algorithm>
+#include <optional>
+#include <ranges>
 #include <string>
 #include <vector>
 #include "types.h"
@@ -51,7 +53,7 @@ public:
             }
             // A missing user means "unknown owner", not "offline".
             // Only an explicit non-online status filters.
-            if (order.hasUser && !order.user.isOnline())
+            if (order.user && !order.user->isOnline())
             {
                 continue;
             }
@@ -66,36 +68,34 @@ public:
         }
 
         // Deeper books win ties: an offer that can actually fill is better.
-        std::stable_sort(sells_.begin(), sells_.end(), cheaper);
-        std::stable_sort(buys_.begin(), buys_.end(), dearer);
+        std::ranges::stable_sort(sells_, cheaper);
+        std::ranges::stable_sort(buys_, dearer);
     }
 
     /// Sell orders, cheapest per unit first.
-    const std::vector<Order> &sells() const { return sells_; }
+    [[nodiscard]] const std::vector<Order> &sells() const { return sells_; }
 
     /// Buy orders, highest per unit first.
-    const std::vector<Order> &buys() const { return buys_; }
+    [[nodiscard]] const std::vector<Order> &buys() const { return buys_; }
 
-    /// Cheapest sell price per unit; false when there are no sell orders.
-    bool bestSell(double &out) const
+    /// Cheapest sell price per unit; `std::nullopt` when there are no sell orders.
+    [[nodiscard]] std::optional<double> bestSell() const
     {
         if (sells_.empty())
         {
-            return false;
+            return std::nullopt;
         }
-        out = sells_.front().platinumPerUnit();
-        return true;
+        return sells_.front().platinumPerUnit();
     }
 
-    /// Highest buy price per unit; false when there are no buy orders.
-    bool bestBuy(double &out) const
+    /// Highest buy price per unit; `std::nullopt` when there are no buy orders.
+    [[nodiscard]] std::optional<double> bestBuy() const
     {
         if (buys_.empty())
         {
-            return false;
+            return std::nullopt;
         }
-        out = buys_.front().platinumPerUnit();
-        return true;
+        return buys_.front().platinumPerUnit();
     }
 
     /**
@@ -104,18 +104,17 @@ public:
      * Zero or negative means the book is crossed, which normally indicates a
      * stale side rather than a free profit.
      *
-     * @return False when either side is empty.
+     * @return `std::nullopt` when either side is empty.
      */
-    bool spread(double &out) const
+    [[nodiscard]] std::optional<double> spread() const
     {
-        double buy = 0.0;
-        double sell = 0.0;
-        if (!bestSell(sell) || !bestBuy(buy))
+        const std::optional<double> sell = bestSell();
+        const std::optional<double> buy = bestBuy();
+        if (!sell || !buy)
         {
-            return false;
+            return std::nullopt;
         }
-        out = sell - buy;
-        return true;
+        return *sell - *buy;
     }
 
 private:

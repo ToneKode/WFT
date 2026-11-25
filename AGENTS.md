@@ -5,7 +5,7 @@ commands verbatim; they are the tested path.
 
 ## What this is
 
-A small C++14 library for reading public Warframe.Market data. Header-only.
+A small C++20 library for reading public Warframe.Market data. Header-only.
 No account and no token.
 
 - `MarketAPI` (`market_api.h`) — items, versions, orders, top, recent, best sells.
@@ -36,7 +36,7 @@ ctest --preset default
 
 ### Prerequisites
 
-- CMake 3.23+, **Ninja on `PATH`**, and a C++14 compiler
+- CMake 3.23+, **Ninja on `PATH`**, and a C++20 compiler
 - vcpkg at `C:\Users\<you>\vcpkg` (or set `VCPKG_ROOT`)
 - Windows: the MSYS2 UCRT64 toolchain, so `g++` is on `PATH`
 
@@ -72,7 +72,7 @@ compile the same headers that ship.
 ## Things that will bite you
 
 - **Never call the live API in a test.** Construct
-  `MarketAPI(std::unique_ptr<HttpTransport>(new FakeTransport()))` or
+  `MarketAPI(std::make_unique<FakeTransport>())` or
   `WfmSocket` over `FakeWsTransport`, and queue replies. `FakeTransport` throws
   immediately if a test forgets to queue a reply.
 - **`FakeTransport` replies are FIFO**, one per request. A test that makes N
@@ -132,11 +132,17 @@ compile the same headers that ship.
   ctor/dtor: a second client's handles die with the first destructor.
 - **GCC `-Wdangling-reference` fires on helpers returning a reference while
   taking a `const std::string&`.** `requireDataArray` / `requireDataObject`
-  return pointers and take `const char*` to stay clean under `-Werror`.
+  return references but take their context as `std::string_view`, which GCC 13
+  and 14 both accept under `-Werror`. Keep it that way rather than reintroducing
+  `const std::string&` or a pointer return.
+- **Absent is not zero.** Optional fields are `std::optional`; use
+  `optionalValue()` / `writeOptional()` in `wfm_json.h` rather than defaults.
+  `RankFilter` expresses "no filter" as `std::nullopt`, so `rank = 0` is a real
+  filter and not the old `-1` sentinel.
 
 ## Conventions
 
-- C++14. No `std::optional`. Optional fields use `hasX` flags.
+- C++20. Optional fields are `std::optional`; there are no `hasX` flags.
 - 4-space indent, braces on the same line, 100-column limit (`.clang-format`).
 - Match the existing doc-comment style (`@brief`, `@param`, `@return`) on
   public API.

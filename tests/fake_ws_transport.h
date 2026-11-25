@@ -1,6 +1,7 @@
 #ifndef TESTS_FAKE_WS_TRANSPORT_H
 #define TESTS_FAKE_WS_TRANSPORT_H
 
+#include <cstddef>
 #include <deque>
 #include <stdexcept>
 #include <string>
@@ -27,7 +28,7 @@ public:
 
     void close() override { connected_ = false; }
 
-    bool isConnected() const override { return connected_; }
+    [[nodiscard]] bool isConnected() const override { return connected_; }
 
     void sendText(const std::string &message) override
     {
@@ -44,18 +45,18 @@ public:
         {
             return false;
         }
-        out = incoming_.front();
+        out = std::move(incoming_.front());
         incoming_.pop_front();
         return true;
     }
 
     /// Queue a frame to be returned by receive().
-    void queueFrame(const std::string &frame) { incoming_.push_back(frame); }
+    void queueFrame(std::string frame) { incoming_.push_back(std::move(frame)); }
 
-    const std::vector<std::string> &sent() const { return sent_; }
-    const std::string &url() const { return url_; }
-    const std::string &subprotocol() const { return subprotocol_; }
-    int connectCount() const { return connectCount_; }
+    [[nodiscard]] const std::vector<std::string> &sent() const { return sent_; }
+    [[nodiscard]] const std::string &url() const { return url_; }
+    [[nodiscard]] const std::string &subprotocol() const { return subprotocol_; }
+    [[nodiscard]] int connectCount() const { return connectCount_; }
 
 private:
     std::deque<std::string> incoming_;

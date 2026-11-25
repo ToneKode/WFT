@@ -11,15 +11,16 @@
 namespace
 {
 
-std::unique_ptr<FakeTransport> makeTransport(FakeTransport *&out)
+template <typename Fake>
+std::unique_ptr<Fake> makeTransport(Fake *&out)
 {
-    std::unique_ptr<FakeTransport> transport(new FakeTransport());
+    auto transport = std::make_unique<Fake>();
     out = transport.get();
     return transport;
 }
 
-nlohmann::json orderJson(const std::string &id, const std::string &type, int platinum,
-                         int quantity, int perTrade = 1)
+nlohmann::json orderJson(const std::string &id, const std::string &type, int platinum, int quantity,
+                         int perTrade = 1)
 {
     return {{"id", id},
             {"type", type},
@@ -57,8 +58,9 @@ TEST_CASE("items() returns full item models")
     REQUIRE(items.size() == 1);
     CHECK(items[0].slug == "khora_prime_set");
     CHECK(items[0].itemName == "Khora Prime Set");
-    CHECK(items[0].tradingTax == 8000);
-    CHECK(fake->requests().at(0).url == V2_API + "/items");
+    REQUIRE(items[0].tradingTax);
+    CHECK(*items[0].tradingTax == 8000);
+    CHECK(fake->requests().at(0).url == std::string(V2_API) + "/items");
 }
 
 TEST_CASE("requests carry platform, language, crossplay, and a real User-Agent")
@@ -74,8 +76,9 @@ TEST_CASE("requests carry platform, language, crossplay, and a real User-Agent")
     CHECK(request.headers.at("Platform") == "xbox");
     CHECK(request.headers.at("Language") == "de");
     CHECK(request.headers.at("Crossplay") == "false");
-    // The API rules require clients to identify themselves.
-    CHECK(request.headers.at("User-Agent") == WFT_USER_AGENT);
+    // The API rules require clients to identify themselves. Header lookup is
+    // case-insensitive, so the mixed-case spelling here is deliberate.
+    CHECK(request.headers.at("user-agent") == WFT_USER_AGENT);
 }
 
 TEST_CASE("item() maps a 404 body to the documented error code")
@@ -104,10 +107,11 @@ TEST_CASE("ordersForItem parses bundle metadata")
     const std::vector<Order> orders = api.ordersForItem("axi_a1_relic");
 
     REQUIRE(orders.size() == 2);
-    CHECK(orders[0].perTrade == 1);
+    REQUIRE(orders[0].perTrade);
+    CHECK(*orders[0].perTrade == 1);
     // 30 platinum over a bundle of 6 is 5 per unit.
     CHECK(orders[1].platinumPerUnit() == doctest::Approx(5.0));
-    CHECK(fake->requests().at(0).url == V2_API + "/orders/item/axi_a1_relic");
+    CHECK(fake->requests().at(0).url == std::string(V2_API) + "/orders/item/axi_a1_relic");
 }
 
 TEST_CASE("bookForItem builds a ranked book in one call")
@@ -121,9 +125,9 @@ TEST_CASE("bookForItem builds a ranked book in one call")
 
     const OrderBook book = api.bookForItem("axi_a1_relic");
 
-    double best = 0.0;
-    REQUIRE(book.bestSell(best));
-    CHECK(best == doctest::Approx(6.0));
+    const std::optional<double> best = book.bestSell();
+    REQUIRE(best);
+    CHECK(*best == doctest::Approx(6.0));
 }
 
 TEST_CASE("topOrdersForItem splits the sides and applies the rank filter")
@@ -137,9 +141,10 @@ TEST_CASE("topOrdersForItem splits the sides and applies the rank filter")
            {"buy", nlohmann::json::array({orderJson("b", "buy", 60, 1)})}}},
          {"error", nullptr}});
 
-    const MarketAPI::TopOrders top = api.topOrdersForItem("khora_prime_set", 3);
+    const MarketAPI::TopOrders top = api.topOrdersForItem("khora_prime_set", {.rank = 3});
 
-    CHECK(fake->requests().at(0).url == V2_API + "/orders/item/khora_prime_set/top?rank=3");
+    CHECK(fake->requests().at(0).url ==
+          std::string(V2_API) + "/orders/item/khora_prime_set/top?rank=3");
     REQUIRE(top.sell.size() == 1);
     REQUIRE(top.buy.size() == 1);
     CHECK(top.sell[0].id == "s");
@@ -155,8 +160,9 @@ TEST_CASE("rankLt takes precedence over rank, as the API does")
                                {"buy", nlohmann::json::array()}}},
                      {"error", nullptr}});
 
-    api.topOrdersForItem("serration", 3, 5);
-    CHECK(fake->requests().at(0).url == V2_API + "/orders/item/serration/top?rankLt=5");
+    api.topOrdersForItem("serration", {.rank = 3, .rankLt = 5});
+    CHECK(fake->requests().at(0).url ==
+          std::string(V2_API) + "/orders/item/serration/top?rankLt=5");
 }
 
 TEST_CASE("topOrdersForItem omits the query when no rank is requested")
@@ -169,7 +175,22 @@ TEST_CASE("topOrdersForItem omits the query when no rank is requested")
                      {"error", nullptr}});
 
     api.topOrdersForItem("serration");
-    CHECK(fake->requests().at(0).url == V2_API + "/orders/item/serration/top");
+    CHECK(fake->requests().at(0).url == std::string(V2_API) + "/orders/item/serration/top");
+}
+
+TEST_CASE("a present rank of zero is a filter, not an absent one")
+{
+    FakeTransport *fake = nullptr;
+    MarketAPI api(makeTransport(fake));
+
+    fake->queueJson({{"data", {{"sell", nlohmann::json::array()},
+                               {"buy", nlohmann::json::array()}}},
+                     {"error", nullptr}});
+
+    // Rank 0 is a real rank; the old -1 sentinel could not express it.
+    api.topOrdersForItem("serration", {.rank = 0});
+    CHECK(fake->requests().at(0).url ==
+          std::string(V2_API) + "/orders/item/serration/top?rank=0");
 }
 
 TEST_CASE("recentOrders parses the marketplace-wide feed")
@@ -184,7 +205,7 @@ TEST_CASE("recentOrders parses the marketplace-wide feed")
 
     REQUIRE(orders.size() == 1);
     CHECK(orders[0].id == "r1");
-    CHECK(fake->requests().at(0).url == V2_API + "/orders/recent");
+    CHECK(fake->requests().at(0).url == std::string(V2_API) + "/orders/recent");
 }
 
 TEST_CASE("a non-2xx without an error envelope reports the status")

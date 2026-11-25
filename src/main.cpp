@@ -5,7 +5,11 @@
  * Hits the live API. The test suite does not.
  */
 
+#include <format>
 #include <iostream>
+#include <optional>
+#include <string>
+#include <vector>
 #include "market_api.h"
 
 int main()
@@ -22,15 +26,14 @@ int main()
         }
 
         const std::string slug = items.front().slug;
-        const OrderBook book = api.bookForItem(slug);
-        double perUnit = 0.0;
-        if (book.bestSell(perUnit))
+        const std::optional<double> bestSell = api.bookForItem(slug).bestSell();
+        if (bestSell)
         {
-            std::cout << slug << " best sell: " << perUnit << " plat per unit\n";
+            std::cout << std::format("{} best sell: {} plat per unit\n", slug, *bestSell);
         }
         else
         {
-            std::cout << slug << " has no sell orders\n";
+            std::cout << std::format("{} has no sell orders\n", slug);
         }
     }
     catch (const std::exception &error)

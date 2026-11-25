@@ -1,6 +1,7 @@
 #include <doctest.h>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "fake_ws_transport.h"
 #include "wfm_socket.h"
@@ -11,9 +12,10 @@
 namespace
 {
 
-std::unique_ptr<FakeWsTransport> makeTransport(FakeWsTransport *&out)
+template <typename Fake>
+std::unique_ptr<Fake> makeTransport(Fake *&out)
 {
-    std::unique_ptr<FakeWsTransport> transport(new FakeWsTransport());
+    auto transport = std::make_unique<Fake>();
     out = transport.get();
     return transport;
 }
@@ -107,7 +109,8 @@ TEST_CASE("new-order events are dispatched to the handler")
     REQUIRE(received.size() == 1);
     CHECK(received[0].id == "o1");
     CHECK(received[0].platinum == 20);
-    CHECK(received[0].user.isOnline());
+    REQUIRE(received[0].user);
+    CHECK(received[0].user->isOnline());
 }
 
 TEST_CASE("hidden new-order events are not dispatched")
@@ -159,6 +162,34 @@ TEST_CASE("command and protection errors are captured verbatim")
             .dump());
     socket.poll(1);
     CHECK(socket.lastError() == "app.errors.userNotVerified");
+}
+
+TEST_CASE("an error frame carrying no payload is reported as unknown, not empty")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    fake->queueFrame(nlohmann::json{{"route", "@wfm|cmd/subscribe/newOrders:error"}}.dump());
+
+    CHECK_NOTHROW(socket.poll(1));
+    CHECK(socket.lastError() == "unknown");
+}
+
+TEST_CASE("an error frame with a non-string payload is tolerated")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+    socket.connect();
+
+    // An unexpected shape must not throw out of handle(): the connection would
+    // die on a frame the server is allowed to send.
+    fake->queueFrame(nlohmann::json{{"route", "@wfm|cmd/subscribe/newOrders:error"},
+                                    {"payload", {{"code", "app.errors.unknown"}}}}
+                         .dump());
+
+    CHECK_NOTHROW(socket.poll(1));
+    CHECK(socket.lastError() == "unknown");
 }
 
 TEST_CASE("malformed frames are counted without killing the connection")
@@ -224,8 +255,7 @@ TEST_CASE("sending on a closed socket throws")
     FakeWsTransport *fake = nullptr;
     WfmSocket socket(makeTransport(fake));
 
-    CHECK_THROWS_WITH(socket.subscribeNewOrders(),
-                      doctest::Contains("closed connection"));
+    CHECK_THROWS_WITH(socket.subscribeNewOrders(), doctest::Contains("closed connection"));
 }
 
 TEST_CASE("WfmSocket rejects a null transport")
@@ -248,4 +278,19 @@ TEST_CASE("handle() dispatches a frame from a caller-owned socket")
     CHECK_FALSE(socket.isConnected());
     REQUIRE(received.size() == 1);
     CHECK(received[0].id == "muxed");
+}
+
+TEST_CASE("handle() accepts a frame without copying it into a std::string")
+{
+    FakeWsTransport *fake = nullptr;
+    WfmSocket socket(makeTransport(fake));
+
+    std::vector<Order> received;
+    socket.onNewOrder([&received](const Order &order) { received.push_back(order); });
+
+    const std::string frame = newOrderFrame("view", "sell", 3, 1);
+    socket.handle(std::string_view(frame));
+
+    REQUIRE(received.size() == 1);
+    CHECK(received[0].id == "view");
 }
