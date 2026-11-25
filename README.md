@@ -1,78 +1,127 @@
 # wft
 
-Small C++ client library for the Warframe.Market API.
+Small C++ client for the [Warframe.Market](https://warframe.market) HTTP API.
 
-## What This Repo Includes
+The supported entry point is `WarframeMarketAPI` in `include/wfm_api.h`. Sign-in uses API v1. Item and order calls use API v2. The library is header-only except for `src/constants.cpp`, which defines the process-wide item index.
 
-- Core API client in include/wfm_api.h
-- HTTP layer with libcurl in include/http_client.h
-- Item lookup database in include/constants.h and src/constants.cpp
-- Two runnable examples in examples/
+## What you can do
 
-## Implemented Features
+- Sign in with email and password, then store or clear the returned JWT.
+- Load the tradable item list, search slugs by substring, and convert between item id and slug.
+- After `setJWT`, list your orders, create a sell order, and update, close, or delete an order by id through `WarframeMarketAPI::authenticated()`.
 
-- Authentication
-	- Sign in with email and password
-	- Set or clear JWT on the client
-- Item data
-	- Load all tradable items
-	- Search item slugs by substring
-	- Convert item ID <-> slug
-- Authenticated order operations
-	- List your orders
-	- Create sell order
-	- Update order fields
-	- Close order
-	- Delete order
-
-Note: Authenticated order methods are exposed through WarframeMarketAPI::authenticated().
+`include/wfm_client.h` and `include/user.h` are an older interactive client. The examples and `src/main.cpp` use `WarframeMarketAPI`.
 
 ## Requirements
 
-- CMake 3.15+
-- C++14 compiler
+- CMake 3.15 or newer
+- A C++14 compiler
 - libcurl
-- nlohmann_json
+- nlohmann/json 3, with a CMake config package named `nlohmann_json`
+
+Debian and Ubuntu:
+
+```bash
+sudo apt install build-essential cmake libcurl4-openssl-dev nlohmann-json3-dev
+```
+
+Windows with vcpkg:
+
+```bash
+vcpkg install curl nlohmann-json
+```
 
 ## Build
 
-### Windows (vcpkg)
+```bash
+cmake -S . -B build
+cmake --build build
+```
 
-1. Install dependencies:
+On Windows, pass the vcpkg toolchain file at configure time:
 
-	 vcpkg install curl nlohmann-json
+```bash
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<path-to-vcpkg>/scripts/buildsystems/vcpkg.cmake
+cmake --build build
+```
 
-2. Configure and build:
-
-	 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<path-to-vcpkg>/scripts/buildsystems/vcpkg.cmake
-	 cmake --build build
-
-3. If using dynamic triplets, copy DLLs into build/ before running.
-
-### Linux/macOS
-
-1. Install dependencies with your package manager.
-2. Configure and build:
-
-	 cmake -S . -B build
-	 cmake --build build
+With a dynamic vcpkg triplet, copy the dependency DLLs next to the executables before running them. Multi-config generators write binaries under `build/Debug` or `build/Release`. Single-config generators write them directly under `build/`.
 
 ## Run
 
-- Main demo: build/wft
-- Basic example: build/basic_usage
-- Order management example: build/order_management
+| Binary | Purpose |
+| --- | --- |
+| `build/wft` | Loads the public item list and prints a few slugs containing `prime`. No account required. |
+| `build/basic_usage` | Prompts for credentials, then searches items and converts a slug to an id. |
+| `build/order_management` | Interactive menu that changes live orders on the signed-in account. |
 
-## Project Layout
+`wft` needs a network connection. The examples need a Warframe.Market account. Password prompts use `std::getline` and the characters are visible while typing.
 
-- include/wfm_api.h: high-level API
-- include/types.h: request and response models
-- include/http_client.h: HTTP methods and rate limiting
-- include/constants.h: API constants and in-memory item index
-- src/main.cpp: simple demo
-- examples/basic_usage.cpp: auth and item search flow
-- examples/order_management.cpp: interactive order workflow
+## Usage
+
+`login` returns the token and does not store it. Call `setJWT` before `authenticated()`. Call `loadItems()` once before searching, converting ids, creating an order, or listing orders. Listing and creating orders look up slugs in that in-memory index.
+
+```cpp
+#include "wfm_api.h"
+
+WarframeMarketAPI api;
+
+AuthResponse auth = api.login(email, password);
+api.setJWT(auth.token);
+api.loadItems();
+
+auto matches = api.searchItems("khora_prime");
+std::string id = api.getIDBySlug(matches.front());
+
+auto session = api.authenticated();
+
+SellOrderRequest request;
+request.itemSlug = matches.front();
+request.platinum = 40;
+request.quantity = 1;
+request.visible = true;
+std::string orderId = session.createSellOrder(request);
+
+UpdateOrderRequest update;
+update.hasPlatinum = true;
+update.platinum = 35;
+session.updateOrder(orderId, update);
+
+session.closeOrder(orderId, 1);
+```
+
+`login` copies the `authorization` response header into `AuthResponse::token`. Pass that string to `setJWT`. Authenticated calls require the stored value to begin with `JWT `, including the space, and they send the remainder as a Bearer token.
+
+`loadItems()` appends to the global slug list and does not clear it. Call it once per process. A second call duplicates search results.
+
+The client spaces its own requests at least 350ms apart. `searchItems` is a case-sensitive substring match on the item slug.
+
+## Project layout
+
+```
+include/wfm_api.h        high-level client
+include/types.h          auth, order, and item structs
+include/http_client.h    curl wrapper and rate spacing
+include/constants.h      API base URLs and the item index type
+src/constants.cpp        global itemDB definition
+src/main.cpp             unauthenticated demo
+examples/basic_usage.cpp login and item search
+examples/order_management.cpp
+                         live order menu
+include/wfm_client.h     older interactive client
+include/user.h           older holder around WfmClient
+```
+
+Link `src/constants.cpp` into any binary that calls `loadItems()`. The global `itemDB` is defined in that file.
+
+## Install
+
+```bash
+cmake --install build --prefix /usr/local
+```
+
+Executables install to `bin`. Headers install to `include/wft`.
 
 ## License
 
-MIT. See LICENSE.
+MIT. See [LICENSE](LICENSE).
