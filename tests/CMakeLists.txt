@@ -27,18 +27,24 @@ set_tests_properties(wft_tests PROPERTIES TIMEOUT 60)
 
 # x64-mingw-dynamic and x64-windows link a shared libcurl. ctest starts
 # wft_tests with a clean PATH, so the loader never sees libcurl.dll or the
-# DLLs next to it (libssh2, zlib, libwebsockets, ...). Static triplets have
-# no imported DLL and skip this.
+# DLLs next to it. CURL::libcurl is an alias of CURL::libcurl_shared (or
+# libcurl_static); the alias itself has no IMPORTED_LOCATION.
 if(WIN32)
+    set(_wft_curl CURL::libcurl)
+    get_target_property(_wft_curl_aliased "${_wft_curl}" ALIASED_TARGET)
+    if(_wft_curl_aliased)
+        set(_wft_curl "${_wft_curl_aliased}")
+    endif()
+
     string(TOUPPER "${CMAKE_BUILD_TYPE}" _wft_cfg)
     set(_wft_curl_dll "")
     if(_wft_cfg)
-        get_target_property(_wft_curl_dll CURL::libcurl "IMPORTED_LOCATION_${_wft_cfg}")
+        get_target_property(_wft_curl_dll "${_wft_curl}" "IMPORTED_LOCATION_${_wft_cfg}")
     endif()
     if(NOT _wft_curl_dll OR _wft_curl_dll MATCHES "NOTFOUND")
-        get_target_property(_wft_curl_dll CURL::libcurl IMPORTED_LOCATION)
+        get_target_property(_wft_curl_dll "${_wft_curl}" IMPORTED_LOCATION)
     endif()
-    get_target_property(_wft_curl_type CURL::libcurl TYPE)
+    get_target_property(_wft_curl_type "${_wft_curl}" TYPE)
     if(_wft_curl_type STREQUAL "SHARED_LIBRARY"
             AND _wft_curl_dll
             AND NOT _wft_curl_dll MATCHES "NOTFOUND")
@@ -48,6 +54,8 @@ if(WIN32)
                 ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_wft_curl_bindir}")
     endif()
     unset(_wft_cfg)
+    unset(_wft_curl)
+    unset(_wft_curl_aliased)
     unset(_wft_curl_dll)
     unset(_wft_curl_type)
     unset(_wft_curl_bindir)

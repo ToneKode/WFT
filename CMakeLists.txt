@@ -120,6 +120,11 @@ endif()
 add_library(wft_core INTERFACE)
 target_include_directories(wft_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(wft_core INTERFACE CURL::libcurl nlohmann_json::nlohmann_json)
+if(WIN32)
+    # ws_client.h calls WSAPoll, and the test upgrade server calls the rest of
+    # Winsock. libcurl's import library does not satisfy those direct references.
+    target_link_libraries(wft_core INTERFACE ws2_32)
+endif()
 
 # ===========================================================================
 # Executables

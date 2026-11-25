@@ -111,12 +111,12 @@ Verified only against fakes / offline transport tests:
 The Linux CI commands were run locally with gcc, the vcpkg manifest, and
 `cmake --preset default -DWFT_WARNINGS_AS_ERRORS=ON`. Configure found curl with
 `WS` and `WSS`. The build was clean under `-Werror`, and `ctest --preset default`
-passed 65 cases / 222 assertions. The Windows job has not been run on a Windows
-runner.
+passed 65 cases / 222 assertions. The GitHub Actions Linux job passed the same
+way. The Windows job installed the manifest and compiled, then failed to link
+`wft_tests` until `ws2_32` was added for `WSAPoll` and the test's Winsock calls.
 
 Never run:
 
-- The Windows CI job on a Windows runner
 - MSVC triplet selection
 - The demo executable against the live API
 
