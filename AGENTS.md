@@ -30,9 +30,22 @@ cmake --build --preset default
 ctest --preset default
 ```
 
-`cmake --preset ci` is the strict configuration: Release build with `-Werror`.
-**Treat a warning as a failure**; both CI jobs do, and they configure with
-`-DWFT_WARNINGS_AS_ERRORS=ON`.
+`cmake --preset ci` is the local strict configuration: Release, with
+`-DWFT_WARNINGS_AS_ERRORS=ON`. **Treat a warning as a failure.**
+
+GitHub Actions does not use that preset. `.github/workflows/ci.yml` runs, on
+both jobs:
+
+```bash
+cmake --preset default -DWFT_WARNINGS_AS_ERRORS=ON
+cmake --build --preset default
+ctest --preset default
+```
+
+That keeps the Debug `default` preset and turns warnings into errors. The
+workflow starts on pull requests, on `workflow_dispatch`, and on pushes to
+`main` and `dev/phase1`. The Linux job sets `CC=gcc` and `CXX=g++`.
+`find_package` asks for nlohmann/json 3.10 or newer, CONFIG mode.
 
 ### Prerequisites
 
@@ -61,7 +74,7 @@ nlohmann_json.
 | `include/curl_runtime.h` | Process-wide `curl_global_init`; never cleaned up |
 | `include/wfm_json.h` | v2 JSON → `Item` / `Order` / `UserShort` |
 | `include/api_error.h` | v2 error envelope; `ApiError` carries `request` / `inputs` codes |
-| `include/http_client.h` | libcurl `HttpTransport`; 350 ms pacing, 429/509 retry |
+| `include/http_client.h` | libcurl `HttpTransport`; process-wide 350 ms pacing; retries 429, 509, and status >= 500 |
 | `include/http_transport.h` | HTTP seam; `Get` only |
 | `include/constants.h` | `V2_API`, `WS_API`, `WFT_USER_AGENT` |
 | `include/types.h` | `Item`, `Order`, `UserShort` |
@@ -69,7 +82,10 @@ nlohmann_json.
 | `tests/` | doctest; `fake_transport.h` and `fake_ws_transport.h` |
 
 `wft_core` is an INTERFACE library. The demo and `wft_tests` link it, so tests
-compile the same headers that ship.
+compile the same headers that ship. On Windows it also links `ws2_32`, because
+`ws_client.h` calls `WSAPoll` and the test upgrade server calls the rest of
+Winsock. The MinGW test target prepends the shared libcurl directory to `PATH`
+so `ctest` can load that DLL.
 
 ## Things that will bite you
 
@@ -107,13 +123,34 @@ compile the same headers that ship.
   expensive.
 - **`OrderBook` drops hidden orders and offline users** (`UserShort::status`
   is parsed so this works). Orders with no embedded user stay: unknown is not
-  offline. `spread()` <= 0 means the book is crossed, usually a stale side.
+  offline. An order whose type is neither `buy` nor `sell` is dropped. Equal
+  unit prices keep the larger `quantity` first. `spread()` <= 0 means the
+  book is crossed, usually a stale side.
+- **`parseOrder` never fills `Order::itemSlug`.** Public payloads carry
+  `itemId`. `ItemListings::itemSlug` is the slug the caller passed in. A
+  missing `visible` becomes false, so both `OrderBook` and `onNewOrder` drop
+  that order. A missing `perTrade`, or one that is not positive, counts as
+  one unit inside `platinumPerUnit()`. `UserShort` is the exception to the
+  optional-field rule: missing strings become empty and a missing
+  `reputation` becomes 0.
 - **Endo and star items rank differently server-side.** `OrderBook` does not
   replicate that. Prefer `MarketAPI::topOrdersForItem()`. `bestSells()` ranks
   through `OrderBook`, so the same caveat applies.
 - **`bestSells()` costs one request per slug.** There is no multi-item orders
-  endpoint. A 20-slug call is 20 requests, about 7 seconds, on purpose. Leave
-  the shared 3-req/sec limiter in place; do not fan the calls out in parallel.
+  endpoint. A 20-slug call is 20 requests, about 7 seconds, on purpose. The
+  default `limit` is 5; `0` keeps every sell the book kept. Duplicate slugs
+  are fetched twice. The first failure throws, so the caller gets nothing
+  from the batch, including items already fetched. Leave the shared
+  3-req/sec limiter in place; do not fan the calls out in parallel.
+- **The limiter is one static clock, and `WsClient` does not use it.**
+  `HttpClient::awaitSlot` keeps `nextAllowed` in a function-local static. The
+  gap it adds is that instance's `minDelay_` (default 350 ms), so a test
+  client constructed with a shorter delay moves the process-wide slot.
+  `WsClient` never takes this lock.
+- **Retries are 429, 509, and any status >= 500**, up to 4 attempts. The
+  backoff is `500 * 2^attempt` ms plus a jitter in `[0, base/2]`. Any other
+  non-2xx status throws `HttpStatusError` on the first response. The last
+  throttled attempt throws too, body included.
 - **Protocol tests use `FakeWsTransport`; `WsClient` tests do not dial
   `WS_API`.** `WfmSocket` sends `@wfm|cmd/subscribe/newOrders` (and the
   matching unsubscribe) and parses `@wfm|event/subscriptions/newOrder` into
@@ -122,6 +159,33 @@ compile the same headers that ship.
   `subscribeItemOrders()` / `subscribeProfileOrders()` throw
   `std::logic_error` because those routes are unregistered stubs on the server.
   Online count, status, and sign-in are not the order feed.
+- **`subscribeNewOrders` returns as soon as the frame is sent.** The id is
+  `wft-1`, `wft-2`, and so on. `:ok` arrives on a later `poll()` or `handle()`
+  and increments `acknowledgedCommands()`. `:error` and `@wfm|protect/error`
+  set `lastError()` to the payload when it is a string, otherwise
+  `"unknown"`. Malformed frames increment `malformedFrames()` and do not
+  throw. Unknown routes are ignored. An empty platform omits the `platform`
+  field, which subscribes to every platform. Unsubscribe must resend the same
+  filters. The server forces `crossplay` false when `platform` is `switch`;
+  this client still sends the bool it was given.
+- **`WsClient` frees the easy handle before the header list.**
+  `destroyHandle()` resets the handle, then the `curl_slist`.
+  Move-assignment calls `destroyHandle()` before taking the other object. The
+  destructor does not send a close frame; `close()` sends `CURLWS_CLOSE` and
+  then destroys the handle. A second `connect()` without `close()` throws.
+  The handshake requires `CURLE_OK` and HTTP 101, uses a 10 second connect
+  timeout, and sets no transfer timeout. The assembler caps a text message at
+  1 MiB, discards binary frames, ignores ping and pong, and a close frame
+  throws `WsClient: connection closed` after dropping the handle. The upgrade
+  request sends `WFT_USER_AGENT`.
+- **`WFT_USER_AGENT` is not the CMake version.** The wire identity is
+  `wft/0.2.0 (+https://github.com/tonekode/wft)`. `project()` and
+  `vcpkg.json` both say `1.0.0`. Change the User-Agent when the identity on
+  the wire should change.
+- **`setContext` stores the strings it is given.** Defaults are platform
+  `pc`, language `en`, and crossplay true. Later requests send `Accept`,
+  `User-Agent`, `Platform`, `Language`, and `Crossplay` (`true` or `false`).
+  The platform argument is not checked against a list.
 - **`MarketAPI::versions()` is the cache key.** It returns the
   `collections.items` hash and `updatedAt`. An empty `itemsHash` on an
   unexpected payload is deliberate: the caller refreshes, which is safe.
@@ -159,4 +223,5 @@ compile the same headers that ship.
 2. `ctest --preset default` passes.
 3. New behaviour has a test in `tests/` that runs offline via `FakeTransport`
    or `FakeWsTransport`.
-4. Public API changes are reflected in `README.md`.
+4. Public API changes are reflected in `README.md`, and in `SCOPE.md` when
+   the in-or-out list changes.
