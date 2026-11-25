@@ -108,9 +108,16 @@ Verified only against fakes / offline transport tests:
 - Everything in `WfmSocket` (protocol on `FakeWsTransport`)
 - `WsClient` assembler and refused-connection behaviour (no dial to `WS_API`)
 
+The Linux CI commands were run locally with gcc, the vcpkg manifest, and
+`cmake --preset default -DWFT_WARNINGS_AS_ERRORS=ON`. Configure found curl with
+`WS` and `WSS`. The build was clean under `-Werror`, and `ctest --preset default`
+passed 65 cases / 222 assertions. The GitHub Actions Linux job passed the same
+way. The Windows job installed the manifest and compiled, then failed to link
+`wft_tests` on `WSAPoll` and the test's Winsock calls. `wft_core` now links
+`ws2_32`, and the following Windows job passed configure, build, and `ctest`.
+
 Never run:
 
-- The Linux CI job, which needs a Linux toolchain
 - MSVC triplet selection
 - The demo executable against the live API
 
