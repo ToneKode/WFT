@@ -5,7 +5,7 @@ Written against the tree on `dev/phase1`.
 
 ## In one sentence
 
-A header-only C++14 library that reads public Warframe.Market data — items,
+A header-only C++20 library that reads public Warframe.Market data — items,
 orders, prices, and the live new-order feed — with no account and no token.
 
 ## What ships
@@ -69,7 +69,7 @@ server has not registered those routes:
 - One `default` CMake preset (Ninja), triplet chosen from the compiler
 - `ci` preset: Release with `-Werror`
 - GitHub Actions on Linux and Windows
-- 47 offline doctest cases; no test touches the network
+- 53 offline doctest cases; no test touches the network
 
 ## What is deliberately not here
 

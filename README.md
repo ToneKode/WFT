@@ -1,6 +1,6 @@
 # wft
 
-A C++14 library for reading public Warframe.Market data. No account and no token.
+A C++20 library for reading public Warframe.Market data. No account and no token.
 
 `Order::platinum` is the price of a bundle of `perTrade` units, not one unit.
 `30` platinum with `perTrade` 6 is the same offer as `5` platinum with `perTrade` 1.
@@ -49,6 +49,23 @@ for (const auto &listing : api.bestSells({"khora_prime_set"}, 3))
 and Ayatan star items, use `topOrdersForItem()`: the server ranks those, and
 `OrderBook` does not copy that ranking.
 
+Optional fields are `std::optional`, so "the server did not send this" never
+collapses into a zero. That matters most on orders, where an absent `rank` and
+a rank of `0` are different offers:
+
+```cpp
+const OrderBook book = api.bookForItem("khora_prime_set");
+if (const std::optional<double> best = book.bestSell())
+{
+    std::cout << std::format("{} plat each\n", *best);
+}
+
+// rankLt wins over rank; leaving both unset sends no filter, and rank = 0 is
+// a real filter rather than a sentinel.
+const MarketAPI::TopOrders top =
+    api.topOrdersForItem("serration", {.rank = 0});
+```
+
 ## Live orders
 
 `WfmSocket` subscribes with `@wfm|cmd/subscribe/newOrders` and parses
@@ -75,7 +92,7 @@ Linux → `x64-linux`, macOS → `arm64-osx` / `x64-osx`), and installs
 dependencies from `vcpkg.json` in manifest mode. `cmake --preset ci` is the
 Release build with warnings as errors.
 
-Needs CMake 3.23+, Ninja, a C++14 compiler, and vcpkg. The manifest asks for
+Needs CMake 3.23+, Ninja, a C++20 compiler, and vcpkg. The manifest asks for
 `curl[websockets]` and `nlohmann_json`, so the WebSocket feature cannot be
 forgotten. Configuration fails if the curl found was built without it.
 
