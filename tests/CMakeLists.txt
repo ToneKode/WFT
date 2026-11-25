@@ -24,3 +24,31 @@ add_test(NAME wft_tests COMMAND wft_tests)
 # instead of blocking CI. Failure is judged by exit code alone, so a test that
 # legitimately prints "ERROR: " is not mistaken for a failure.
 set_tests_properties(wft_tests PROPERTIES TIMEOUT 60)
+
+# x64-mingw-dynamic and x64-windows link a shared libcurl. ctest starts
+# wft_tests with a clean PATH, so the loader never sees libcurl.dll or the
+# DLLs next to it (libssh2, zlib, libwebsockets, ...). Static triplets have
+# no imported DLL and skip this.
+if(WIN32)
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _wft_cfg)
+    set(_wft_curl_dll "")
+    if(_wft_cfg)
+        get_target_property(_wft_curl_dll CURL::libcurl "IMPORTED_LOCATION_${_wft_cfg}")
+    endif()
+    if(NOT _wft_curl_dll OR _wft_curl_dll MATCHES "NOTFOUND")
+        get_target_property(_wft_curl_dll CURL::libcurl IMPORTED_LOCATION)
+    endif()
+    get_target_property(_wft_curl_type CURL::libcurl TYPE)
+    if(_wft_curl_type STREQUAL "SHARED_LIBRARY"
+            AND _wft_curl_dll
+            AND NOT _wft_curl_dll MATCHES "NOTFOUND")
+        get_filename_component(_wft_curl_bindir "${_wft_curl_dll}" DIRECTORY)
+        file(TO_CMAKE_PATH "${_wft_curl_bindir}" _wft_curl_bindir)
+        set_tests_properties(wft_tests PROPERTIES
+                ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_wft_curl_bindir}")
+    endif()
+    unset(_wft_cfg)
+    unset(_wft_curl_dll)
+    unset(_wft_curl_type)
+    unset(_wft_curl_bindir)
+endif()

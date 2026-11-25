@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev/phase1]
   pull_request:
   workflow_dispatch:
 
@@ -16,29 +16,42 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
+      # build-essential provides gcc. Pin it so a runner image whose default
+      # c++ is clang cannot select a different toolchain than the one installed.
+      CC: gcc
+      CXX: g++
     steps:
       - uses: actions/checkout@v4
 
       - name: Install compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ninja-build
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config zip unzip
+
+      # Clone before the cache restore. Restoring downloads into
+      # $VCPKG_ROOT/downloads creates that directory, and git clone refuses a
+      # non-empty destination, so a cache hit used to fail the next run.
+      - name: Clone vcpkg
+        run: |
+          if [ ! -d "$VCPKG_ROOT/.git" ]; then
+            git clone --depth 1 https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
+          fi
 
       - uses: actions/cache@v4
         with:
           path: |
-            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+            ${{ runner.temp }}/vcpkg-cache
             ${{ env.VCPKG_ROOT }}/downloads
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
 
       # curl[websockets] and nlohmann_json both come from vcpkg.json.
+      # runner.temp is not a valid context in a job-level env block (GitHub
+      # rejects the workflow before any job starts), so publish the cache
+      # directory from this step. RUNNER_TEMP is the same path.
       - name: Bootstrap vcpkg
         run: |
-          if [ ! -d "$VCPKG_ROOT/.git" ]; then
-            git clone https://github.com/microsoft/vcpkg "$VCPKG_ROOT"
-          fi
-          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          mkdir -p "$RUNNER_TEMP/vcpkg-cache"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-cache" >> "$GITHUB_ENV"
           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 
       - name: Configure
@@ -55,7 +68,9 @@ jobs:
     runs-on: windows-latest
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-cache
+      # Keep these as Windows paths inside the MSYS2 shell. Converted unix
+      # paths are not usable by vcpkg.exe.
+      MSYS2_ENV_CONV_EXCL: VCPKG_ROOT;VCPKG_DEFAULT_BINARY_CACHE
     steps:
       - uses: actions/checkout@v4
 
@@ -68,11 +83,19 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+
+      - name: Clone vcpkg
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:VCPKG_ROOT/.git")) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+          }
 
       - uses: actions/cache@v4
         with:
           path: |
-            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+            ${{ runner.temp }}/vcpkg-cache
             ${{ env.VCPKG_ROOT }}/downloads
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
 
@@ -80,10 +103,9 @@ jobs:
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
-          if (-not (Test-Path "$env:VCPKG_ROOT/.git")) {
-            git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
-          }
-          New-Item -ItemType Directory -Force "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+          $cache = Join-Path $env:RUNNER_TEMP "vcpkg-cache"
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
           & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
 
       - name: Configure

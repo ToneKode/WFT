@@ -108,9 +108,15 @@ Verified only against fakes / offline transport tests:
 - Everything in `WfmSocket` (protocol on `FakeWsTransport`)
 - `WsClient` assembler and refused-connection behaviour (no dial to `WS_API`)
 
+The Linux CI commands were run locally with gcc, the vcpkg manifest, and
+`cmake --preset default -DWFT_WARNINGS_AS_ERRORS=ON`. Configure found curl with
+`WS` and `WSS`. The build was clean under `-Werror`, and `ctest --preset default`
+passed 65 cases / 222 assertions. The Windows job has not been run on a Windows
+runner.
+
 Never run:
 
-- The Linux CI job, which needs a Linux toolchain
+- The Windows CI job on a Windows runner
 - MSVC triplet selection
 - The demo executable against the live API
 
