@@ -3,9 +3,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <format>
 #include <map>
+#include <ranges>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 
 /**
  * @file http_transport.h
@@ -19,19 +23,23 @@
  * @brief Case-insensitive ordering for HTTP header names.
  *
  * HTTP header names are case-insensitive, so a lookup for "content-type"
- * must find a header the server spelled "Content-Type".
+ * must find a header the server spelled "Content-Type". The
+ * `is_transparent` marker makes `find`/`contains`/`at` accept a `string_view`
+ * or a literal without building a `std::string` first.
  */
 struct CaseInsensitiveLess
 {
-    bool operator()(const std::string &a, const std::string &b) const
+    using is_transparent = void;
+
+    bool operator()(std::string_view a, std::string_view b) const
     {
-        return std::lexicographical_compare(
-            a.begin(), a.end(), b.begin(), b.end(),
-            [](char lhs, char rhs)
-            {
-                return std::tolower(static_cast<unsigned char>(lhs)) <
-                       std::tolower(static_cast<unsigned char>(rhs));
-            });
+        return std::ranges::lexicographical_compare(a, b, {}, lower, lower);
+    }
+
+private:
+    static char lower(char value)
+    {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(value)));
     }
 };
 
@@ -44,12 +52,12 @@ struct CaseInsensitiveLess
 class HttpStatusError : public std::runtime_error
 {
 public:
-    HttpStatusError(long status, const std::string &body)
-        : std::runtime_error("HTTP " + std::to_string(status) + ": " + body),
-          status_(status), body_(body) {}
+    HttpStatusError(long status, std::string body)
+        : std::runtime_error(std::format("HTTP {}: {}", status, body)),
+          status_(status), body_(std::move(body)) {}
 
-    long status() const { return status_; }
-    const std::string &body() const { return body_; }
+    [[nodiscard]] long status() const { return status_; }
+    [[nodiscard]] const std::string &body() const { return body_; }
 
 private:
     long status_;
@@ -61,7 +69,7 @@ class HttpTransport
 public:
     using Headers = std::map<std::string, std::string, CaseInsensitiveLess>;
 
-    virtual ~HttpTransport() {}
+    virtual ~HttpTransport() = default;
 
     virtual std::string Get(const std::string &url, const Headers &headers) = 0;
 };
