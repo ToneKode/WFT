@@ -12,6 +12,7 @@
 #include "constants.h"
 #include "types.h"
 #include "wfm_json.h"
+#include "ws_client.h"
 #include "ws_transport.h"
 
 /**
@@ -35,20 +36,19 @@
  *
  * ## Getting a transport
  *
- * This needs a client that can speak WebSocket. The vcpkg `curl` port cannot
- * (its `curl_version_info().protocols` has no `ws`/`wss`), so there is no
- * `WsClient` here to hand it. You supply a `WsTransport` over your own
- * WS-capable library, or you poll through `MarketAPI` instead.
+ * Hand it a `WsClient` for the library's own libcurl transport, or any other
+ * `WsTransport`. A dead connection throws from `poll()` so the caller can
+ * reconnect and resend the same `subscribeNewOrders` filters.
  *
- * `handle()` is the seam for that. If your client already owns the socket —
- * because it multiplexes other feeds onto it — pass a `WsTransport` whose
- * `sendText()` writes to your client and whose `receive()` never returns a
- * frame, then call `handle(frame)` for every text frame you receive. Your
- * client does the reading; `poll()` is only a convenience for the case where
- * a `WsTransport` owns the read loop.
+ * `handle()` remains the seam for multiplexed sockets. If your client already
+ * owns the socket — because it multiplexes other feeds onto it — pass a
+ * `WsTransport` whose `sendText()` writes to your client and whose
+ * `receive()` never returns a frame, then call `handle(frame)` for every text
+ * frame you receive. Your client does the reading; `poll()` is only a
+ * convenience for the case where a `WsTransport` owns the read loop.
  *
  * @code
- * WfmSocket socket(std::make_unique<MyWsClient>());
+ * WfmSocket socket(std::make_unique<WsClient>());
  * socket.onNewOrder([](const Order &order) { ... });
  * socket.connect();
  * socket.subscribeNewOrders("pc", true);
