@@ -5,10 +5,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+#include "wfm_socket.h"
 #include "ws_client.h"
 
 #if defined(_WIN32)
@@ -444,4 +446,54 @@ TEST_CASE("WsClient rejects a second connect without close")
 
     client.close();
     CHECK_FALSE(client.isConnected());
+}
+
+TEST_CASE("WsClient destructor drops a live connection without close")
+{
+    {
+        LocalWsUpgradeServer server;
+        WsClient client;
+        client.connect(server.url(), "wfm");
+        CHECK(client.isConnected());
+    }
+
+    LocalWsUpgradeServer server;
+    WsClient client;
+    client.connect(server.url(), "wfm");
+    CHECK(client.isConnected());
+}
+
+TEST_CASE("WsClient move-assignment over a live connection frees the handle first")
+{
+    LocalWsUpgradeServer kept;
+    LocalWsUpgradeServer dropped;
+    WsClient client;
+    client.connect(dropped.url(), "wfm");
+    CHECK(client.isConnected());
+
+    WsClient replacement;
+    replacement.connect(kept.url(), "wfm");
+    client = std::move(replacement);
+
+    CHECK(client.isConnected());
+    CHECK_FALSE(replacement.isConnected());
+}
+
+TEST_CASE("WfmSocket destructor drops a live WsClient without close")
+{
+    // WfmSocket::connect() always dials WS_API. Open the WsClient against the
+    // local upgrade server, then move it in so ~WfmSocket runs ~WsClient
+    // without close().
+    {
+        LocalWsUpgradeServer server;
+        auto client = std::make_unique<WsClient>();
+        client->connect(server.url(), "wfm");
+        WfmSocket socket(std::move(client));
+        CHECK(socket.isConnected());
+    }
+
+    LocalWsUpgradeServer server;
+    WsClient client;
+    client.connect(server.url(), "wfm");
+    CHECK(client.isConnected());
 }
