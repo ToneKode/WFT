@@ -2,8 +2,12 @@
 #define ITEM_CACHE_H
 
 #include <fstream>
+#include <format>
+#include <iterator>
+#include <ranges>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "types.h"
@@ -55,25 +59,22 @@ namespace item_cache
  * @throws std::runtime_error when the file cannot be written.
  */
 inline void saveItems(const std::string &path, const std::vector<Item> &items,
-                      const std::string &itemsHash)
+                      std::string_view itemsHash)
 {
     nlohmann::json entries = nlohmann::json::array();
-    for (const auto &item : items)
-    {
-        entries.push_back(wfm_json::toItemJson(item));
-    }
+    std::ranges::transform(items, std::back_inserter(entries), wfm_json::toItemJson);
 
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file)
     {
-        throw std::runtime_error("Failed to write item cache " + path + ": cannot open");
+        throw std::runtime_error(std::format("Failed to write item cache {}: cannot open", path));
     }
 
     file << nlohmann::json{{"itemsHash", itemsHash}, {"items", entries}}.dump();
     file.close();
     if (!file)
     {
-        throw std::runtime_error("Failed to write item cache " + path + ": write failed");
+        throw std::runtime_error(std::format("Failed to write item cache {}: write failed", path));
     }
 }
 
@@ -95,7 +96,7 @@ inline std::vector<Item> loadItems(const std::string &path, std::string &itemsHa
     std::ifstream file(path, std::ios::binary);
     if (!file)
     {
-        throw std::runtime_error("Failed to read item cache " + path + ": cannot open");
+        throw std::runtime_error(std::format("Failed to read item cache {}: cannot open", path));
     }
 
     nlohmann::json root;
@@ -105,25 +106,41 @@ inline std::vector<Item> loadItems(const std::string &path, std::string &itemsHa
     }
     catch (const nlohmann::json::parse_error &error)
     {
-        throw std::runtime_error("Failed to read item cache " + path + ": " + error.what());
+        throw std::runtime_error(
+            std::format("Failed to read item cache {}: {}", path, error.what()));
     }
 
-    if (!root.is_object() || !wfm_json::hasKey(root, "items") || !root.at("items").is_array())
+    const nlohmann::json *entries = nullptr;
+    if (root.is_object())
     {
-        throw std::runtime_error("Failed to read item cache " + path + ": not an item cache");
+        if (const auto found = root.find("items"); found != root.end() && found->is_array())
+        {
+            entries = &*found;
+        }
     }
-    if (root.at("items").empty())
+    if (entries == nullptr)
     {
-        throw std::runtime_error("Failed to read item cache " + path + ": no items");
+        throw std::runtime_error(
+            std::format("Failed to read item cache {}: not an item cache", path));
+    }
+    if (entries->empty())
+    {
+        throw std::runtime_error(std::format("Failed to read item cache {}: no items", path));
     }
 
-    itemsHash = (wfm_json::hasKey(root, "itemsHash") && root.at("itemsHash").is_string())
-                    ? root.at("itemsHash").get<std::string>()
-                    : std::string();
+    // An absent or wrong-typed hash is empty, which callers treat as stale.
+    if (const auto hash = root.find("itemsHash"); hash != root.end() && hash->is_string())
+    {
+        itemsHash = hash->get<std::string>();
+    }
+    else
+    {
+        itemsHash.clear();
+    }
 
     std::vector<Item> items;
-    items.reserve(root.at("items").size());
-    for (const auto &entry : root.at("items"))
+    items.reserve(entries->size());
+    for (const auto &entry : *entries)
     {
         try
         {
@@ -131,7 +148,8 @@ inline std::vector<Item> loadItems(const std::string &path, std::string &itemsHa
         }
         catch (const std::runtime_error &error)
         {
-            throw std::runtime_error("Failed to read item cache " + path + ": " + error.what());
+            throw std::runtime_error(
+                std::format("Failed to read item cache {}: {}", path, error.what()));
         }
     }
     return items;

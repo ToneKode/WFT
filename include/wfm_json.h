@@ -1,8 +1,10 @@
 #ifndef WFM_JSON_H
 #define WFM_JSON_H
 
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <nlohmann/json.hpp>
 #include "types.h"
 
@@ -13,16 +15,48 @@
  * Parsing lives here rather than inside MarketAPI so response shape handling
  * stays in one place.
  *
- * Optional fields are detected with `hasKey()` rather than defaulted, because
- * "absent" and "zero" carry different meaning for order fields.
+ * Optional fields are read through `optionalValue()` rather than defaulted,
+ * because "absent" and "zero" carry different meaning for order fields.
  */
 
 namespace wfm_json
 {
 
-inline bool hasKey(const nlohmann::json &object, const char *key)
+/// True when `key` is present and not null.
+inline bool hasKey(const nlohmann::json &object, std::string_view key)
 {
     return object.is_object() && object.find(key) != object.end() && !object.at(key).is_null();
+}
+
+/**
+ * @brief Read an optional field, or `std::nullopt` when it is absent or null.
+ *
+ * A present field of the wrong type still throws, as the required fields do:
+ * silently dropping a mistyped value would hide a server-side shape change.
+ */
+template <typename T>
+std::optional<T> optionalValue(const nlohmann::json &object, std::string_view key)
+{
+    if (!hasKey(object, key))
+    {
+        return std::nullopt;
+    }
+    return object.at(key).get<T>();
+}
+
+/**
+ * @brief Write an optional field, omitting it when it holds no value.
+ *
+ * `std::optional` already distinguishes absent from zero, so the cache can
+ * round-trip "the server did not send this" without a parallel flag.
+ */
+template <typename T>
+void writeOptional(nlohmann::json &out, std::string_view key, const std::optional<T> &value)
+{
+    if (value)
+    {
+        out[std::string(key)] = *value;
+    }
 }
 
 /**
@@ -44,49 +78,16 @@ inline Item parseItem(const nlohmann::json &json)
     item.id = json.at("id").get<std::string>();
     item.slug = json.at("slug").get<std::string>();
 
-    if (hasKey(json, "gameRef"))
-    {
-        item.gameRef = json.at("gameRef").get<std::string>();
-    }
-    if (hasKey(json, "tradable"))
-    {
-        item.tradable = json.at("tradable").get<bool>();
-    }
-    if (hasKey(json, "bulkTradable"))
-    {
-        item.hasBulkTradable = true;
-        item.bulkTradable = json.at("bulkTradable").get<bool>();
-    }
-    if (hasKey(json, "maxRank"))
-    {
-        item.hasMaxRank = true;
-        item.maxRank = json.at("maxRank").get<int>();
-    }
-    if (hasKey(json, "maxCharges"))
-    {
-        item.hasMaxCharges = true;
-        item.maxCharges = json.at("maxCharges").get<int>();
-    }
-    if (hasKey(json, "maxAmberStars"))
-    {
-        item.hasMaxAmberStars = true;
-        item.maxAmberStars = json.at("maxAmberStars").get<int>();
-    }
-    if (hasKey(json, "maxCyanStars"))
-    {
-        item.hasMaxCyanStars = true;
-        item.maxCyanStars = json.at("maxCyanStars").get<int>();
-    }
-    if (hasKey(json, "setRoot"))
-    {
-        item.hasSetRoot = true;
-        item.setRoot = json.at("setRoot").get<bool>();
-    }
-    if (hasKey(json, "tradingTax"))
-    {
-        item.hasTradingTax = true;
-        item.tradingTax = json.at("tradingTax").get<int>();
-    }
+    item.gameRef = optionalValue<std::string>(json, "gameRef").value_or("");
+    item.tradable = optionalValue<bool>(json, "tradable").value_or(true);
+    item.bulkTradable = optionalValue<bool>(json, "bulkTradable");
+    item.maxRank = optionalValue<int>(json, "maxRank");
+    item.maxCharges = optionalValue<int>(json, "maxCharges");
+    item.maxAmberStars = optionalValue<int>(json, "maxAmberStars");
+    item.maxCyanStars = optionalValue<int>(json, "maxCyanStars");
+    item.setRoot = optionalValue<bool>(json, "setRoot");
+    item.tradingTax = optionalValue<int>(json, "tradingTax");
+
     if (hasKey(json, "subtypes") && json.at("subtypes").is_array())
     {
         for (const auto &subtype : json.at("subtypes"))
@@ -98,20 +99,19 @@ inline Item parseItem(const nlohmann::json &json)
         }
     }
 
-    // The display name is nested per language; prefer the requested language,
-    // then English, then whatever the server sent first.
-    if (hasKey(json, "i18n") && json.at("i18n").is_object())
+    // The display name is nested per language; prefer English, then whatever
+    // the server sent first.
+    if (const auto i18n = json.find("i18n"); i18n != json.end() && i18n->is_object())
     {
-        const nlohmann::json &i18n = json.at("i18n");
-        if (i18n.contains("en") && i18n.at("en").is_object() &&
-            hasKey(i18n.at("en"), "name"))
+        if (const auto english = i18n->find("en");
+            english != i18n->end() && english->is_object() && hasKey(*english, "name"))
         {
-            item.itemName = i18n.at("en").at("name").get<std::string>();
+            item.itemName = english->at("name").get<std::string>();
         }
-        else if (!i18n.empty() && i18n.begin().value().is_object() &&
-                 hasKey(i18n.begin().value(), "name"))
+        else if (!i18n->empty() && i18n->begin().value().is_object() &&
+                 hasKey(i18n->begin().value(), "name"))
         {
-            item.itemName = i18n.begin().value().at("name").get<std::string>();
+            item.itemName = i18n->begin().value().at("name").get<std::string>();
         }
     }
 
@@ -123,8 +123,8 @@ inline Item parseItem(const nlohmann::json &json)
  *
  * Used by the item cache: writing the API's own field names means the load path
  * reuses `parseItem` instead of a second mapping that could drift from it.
- * Optional metadata is written only when its `hasX` flag is set, because
- * "absent" and "zero" are not the same value.
+ * Optional metadata is written only when it holds a value, because "absent" and
+ * "zero" are not the same thing.
  */
 inline nlohmann::json toItemJson(const Item &item)
 {
@@ -137,38 +137,17 @@ inline nlohmann::json toItemJson(const Item &item)
     {
         out["gameRef"] = item.gameRef;
     }
-    if (item.hasBulkTradable)
-    {
-        out["bulkTradable"] = item.bulkTradable;
-    }
-    if (item.hasMaxRank)
-    {
-        out["maxRank"] = item.maxRank;
-    }
-    if (item.hasMaxCharges)
-    {
-        out["maxCharges"] = item.maxCharges;
-    }
-    if (item.hasMaxAmberStars)
-    {
-        out["maxAmberStars"] = item.maxAmberStars;
-    }
-    if (item.hasMaxCyanStars)
-    {
-        out["maxCyanStars"] = item.maxCyanStars;
-    }
+    writeOptional(out, "bulkTradable", item.bulkTradable);
+    writeOptional(out, "maxRank", item.maxRank);
+    writeOptional(out, "maxCharges", item.maxCharges);
+    writeOptional(out, "maxAmberStars", item.maxAmberStars);
+    writeOptional(out, "maxCyanStars", item.maxCyanStars);
     if (!item.subtypes.empty())
     {
         out["subtypes"] = item.subtypes;
     }
-    if (item.hasSetRoot)
-    {
-        out["setRoot"] = item.setRoot;
-    }
-    if (item.hasTradingTax)
-    {
-        out["tradingTax"] = item.tradingTax;
-    }
+    writeOptional(out, "setRoot", item.setRoot);
+    writeOptional(out, "tradingTax", item.tradingTax);
     return out;
 }
 
@@ -185,39 +164,14 @@ inline UserShort parseUserShort(const nlohmann::json &json)
 
     UserShort user;
     user.id = json.at("id").get<std::string>();
-
-    if (hasKey(json, "ingameName"))
-    {
-        user.ingameName = json.at("ingameName").get<std::string>();
-    }
-    if (hasKey(json, "slug"))
-    {
-        user.slug = json.at("slug").get<std::string>();
-    }
-    if (hasKey(json, "platform"))
-    {
-        user.platform = json.at("platform").get<std::string>();
-    }
-    if (hasKey(json, "locale"))
-    {
-        user.locale = json.at("locale").get<std::string>();
-    }
-    if (hasKey(json, "status"))
-    {
-        user.status = json.at("status").get<std::string>();
-    }
-    if (hasKey(json, "lastSeen"))
-    {
-        user.lastSeen = json.at("lastSeen").get<std::string>();
-    }
-    if (hasKey(json, "reputation"))
-    {
-        user.reputation = json.at("reputation").get<long>();
-    }
-    if (hasKey(json, "crossplay"))
-    {
-        user.crossplay = json.at("crossplay").get<bool>();
-    }
+    user.ingameName = optionalValue<std::string>(json, "ingameName").value_or("");
+    user.slug = optionalValue<std::string>(json, "slug").value_or("");
+    user.platform = optionalValue<std::string>(json, "platform").value_or("");
+    user.locale = optionalValue<std::string>(json, "locale").value_or("");
+    user.status = optionalValue<std::string>(json, "status").value_or("");
+    user.lastSeen = optionalValue<std::string>(json, "lastSeen").value_or("");
+    user.reputation = optionalValue<long>(json, "reputation").value_or(0);
+    user.crossplay = optionalValue<bool>(json, "crossplay").value_or(false);
 
     return user;
 }
@@ -241,69 +195,23 @@ inline Order parseOrder(const nlohmann::json &json)
 
     Order order;
     order.id = json.at("id").get<std::string>();
+    order.orderType = optionalValue<std::string>(json, "type").value_or("");
+    order.platinum = optionalValue<int>(json, "platinum").value_or(0);
+    order.quantity = optionalValue<int>(json, "quantity").value_or(0);
+    order.visible = optionalValue<bool>(json, "visible").value_or(false);
+    order.itemId = optionalValue<std::string>(json, "itemId").value_or("");
+    order.createdAt = optionalValue<std::string>(json, "createdAt").value_or("");
+    order.updatedAt = optionalValue<std::string>(json, "updatedAt").value_or("");
 
-    if (hasKey(json, "type"))
-    {
-        order.orderType = json.at("type").get<std::string>();
-    }
-    if (hasKey(json, "platinum"))
-    {
-        order.platinum = json.at("platinum").get<int>();
-    }
-    if (hasKey(json, "quantity"))
-    {
-        order.quantity = json.at("quantity").get<int>();
-    }
-    if (hasKey(json, "visible"))
-    {
-        order.visible = json.at("visible").get<bool>();
-    }
-    if (hasKey(json, "itemId"))
-    {
-        order.itemId = json.at("itemId").get<std::string>();
-    }
-    if (hasKey(json, "createdAt"))
-    {
-        order.createdAt = json.at("createdAt").get<std::string>();
-    }
-    if (hasKey(json, "updatedAt"))
-    {
-        order.updatedAt = json.at("updatedAt").get<std::string>();
-    }
+    order.perTrade = optionalValue<int>(json, "perTrade");
+    order.subtype = optionalValue<std::string>(json, "subtype");
+    order.rank = optionalValue<int>(json, "rank");
+    order.charges = optionalValue<int>(json, "charges");
+    order.amberStars = optionalValue<int>(json, "amberStars");
+    order.cyanStars = optionalValue<int>(json, "cyanStars");
 
-    if (hasKey(json, "perTrade"))
-    {
-        order.hasPerTrade = true;
-        order.perTrade = json.at("perTrade").get<int>();
-    }
-    if (hasKey(json, "subtype"))
-    {
-        order.hasSubtype = true;
-        order.subtype = json.at("subtype").get<std::string>();
-    }
-    if (hasKey(json, "rank"))
-    {
-        order.hasRank = true;
-        order.rank = json.at("rank").get<int>();
-    }
-    if (hasKey(json, "charges"))
-    {
-        order.hasCharges = true;
-        order.charges = json.at("charges").get<int>();
-    }
-    if (hasKey(json, "amberStars"))
-    {
-        order.hasAmberStars = true;
-        order.amberStars = json.at("amberStars").get<int>();
-    }
-    if (hasKey(json, "cyanStars"))
-    {
-        order.hasCyanStars = true;
-        order.cyanStars = json.at("cyanStars").get<int>();
-    }
     if (hasKey(json, "user") && json.at("user").is_object())
     {
-        order.hasUser = true;
         order.user = parseUserShort(json.at("user"));
     }
 
@@ -317,19 +225,18 @@ inline Order parseOrder(const nlohmann::json &json)
  * @return The array; reference is owned by `root`.
  * @throws std::runtime_error when `data` is missing or not an array.
  *
- * Returns a pointer rather than a reference because GCC's -Wdangling-reference
- * cannot tell that the result outlives this call when the context argument is
- * a temporary string, and treating that warning as an error is the point of
+ * Takes the context as a `std::string_view`: GCC's -Wdangling-reference cannot
+ * tell that the result outlives a call whose `const std::string &` argument
+ * might be a temporary, and treating that warning as an error is the point of
  * the CI configuration.
  */
-inline const nlohmann::json *requireDataArray(const nlohmann::json &root,
-                                              const char *context)
+inline const nlohmann::json &requireDataArray(const nlohmann::json &root, std::string_view context)
 {
     if (!root.is_object() || !root.contains("data") || !root.at("data").is_array())
     {
         throw std::runtime_error(std::string(context) + ": invalid API response format");
     }
-    return &root.at("data");
+    return root.at("data");
 }
 
 /**
@@ -337,14 +244,14 @@ inline const nlohmann::json *requireDataArray(const nlohmann::json &root,
  * @return The object; reference is owned by `root`.
  * @throws std::runtime_error when `data` is missing or not an object.
  */
-inline const nlohmann::json *requireDataObject(const nlohmann::json &root,
-                                               const char *context)
+inline const nlohmann::json &requireDataObject(const nlohmann::json &root,
+                                               std::string_view context)
 {
     if (!root.is_object() || !root.contains("data") || !root.at("data").is_object())
     {
         throw std::runtime_error(std::string(context) + ": invalid API response format");
     }
-    return &root.at("data");
+    return root.at("data");
 }
 
 } // namespace wfm_json
