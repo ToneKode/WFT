@@ -11,7 +11,7 @@ No account and no token.
 - `MarketAPI` (`market_api.h`) — items, versions, orders, top, recent, best sells.
 - `OrderBook` (`order_book.h`) — unit-normalised ranking of one item's orders.
 - `item_cache` (`item_cache.h`) — catalogue on disk, tagged with the version hash.
-- `WfmSocket` (`wfm_socket.h`) — live new-order feed. The caller supplies the socket.
+- `WfmSocket` (`wfm_socket.h`) — live new-order feed over `WsClient` or any `WsTransport`.
 
 See `SCOPE.md` for what is in, what is out, and what is still open.
 
@@ -56,7 +56,9 @@ nlohmann_json.
 | `include/order_book.h` | `OrderBook` — per-unit ranking |
 | `include/item_cache.h` | `item_cache::saveItems` / `loadItems` |
 | `include/wfm_socket.h` | `WfmSocket` — new-order protocol |
+| `include/ws_client.h` | libcurl `WsTransport`; no reader thread, no auto-reconnect |
 | `include/ws_transport.h` | Socket seam so the protocol is testable |
+| `include/curl_runtime.h` | Process-wide `curl_global_init`; never cleaned up |
 | `include/wfm_json.h` | v2 JSON → `Item` / `Order` / `UserShort` |
 | `include/api_error.h` | v2 error envelope; `ApiError` carries `request` / `inputs` codes |
 | `include/http_client.h` | libcurl `HttpTransport`; 350 ms pacing, 429/509 retry |
@@ -112,12 +114,11 @@ compile the same headers that ship.
 - **`bestSells()` costs one request per slug.** There is no multi-item orders
   endpoint. A 20-slug call is 20 requests, about 7 seconds, on purpose. Leave
   the shared 3-req/sec limiter in place; do not fan the calls out in parallel.
-- **The socket protocol ships; a socket does not.** `WfmSocket` sends
-  `@wfm|cmd/subscribe/newOrders` (and the matching unsubscribe) and parses
-  `@wfm|event/subscriptions/newOrder` into `Order`. The URL is `WS_API` with
-  subprotocol `wfm`. Pass a `WsTransport`, or feed frames to `handle()`. The
-  manifest now requires `curl[websockets]` and configuration fails without it,
-  but there is still no libcurl `WsClient` here: writing one is the next task.
+- **Protocol tests use `FakeWsTransport`; `WsClient` tests do not dial
+  `WS_API`.** `WfmSocket` sends `@wfm|cmd/subscribe/newOrders` (and the
+  matching unsubscribe) and parses `@wfm|event/subscriptions/newOrder` into
+  `Order`. The URL is `WS_API` with subprotocol `wfm`. Production code uses
+  `WsClient`; multiplexed callers can still feed frames to `handle()`.
   `subscribeItemOrders()` / `subscribeProfileOrders()` throw
   `std::logic_error` because those routes are unregistered stubs on the server.
   Online count, status, and sign-in are not the order feed.

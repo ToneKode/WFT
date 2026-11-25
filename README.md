@@ -72,9 +72,25 @@ const MarketAPI::TopOrders top =
 `@wfm|event/subscriptions/newOrder` into `Order`. Connect to
 `wss://ws.warframe.market/socket` with subprotocol `wfm`.
 
-You supply a `WsTransport`, or you own the socket and call `handle(frame)`.
-Item and profile order subscriptions are not registered routes; calling
-`subscribeItemOrders()` or `subscribeProfileOrders()` throws
+```cpp
+WfmSocket socket(std::make_unique<WsClient>());
+socket.onNewOrder([](const Order &order) {
+    // Visible new orders only.
+});
+socket.connect();
+socket.subscribeNewOrders("pc", true);
+while (running)
+{
+    socket.poll(1000);
+}
+```
+
+`WsClient` is the library's libcurl transport. A dead connection throws from
+`poll()` so the loop does not spin as idle; reconnect, then resend the same
+`subscribeNewOrders` filters. If you already own the socket — for example to
+multiplex other feeds — call `handle(frame)` for each text frame instead of
+`poll()`. Item and profile order subscriptions are not registered routes;
+calling `subscribeItemOrders()` or `subscribeProfileOrders()` throws
 `std::logic_error` without sending anything. Online count, status, and sign-in
 are not this feed.
 
@@ -105,7 +121,7 @@ curl DLL is copied next to the executable after link; on Linux and macOS the
 shared system library is used.
 
 Tests stay offline: `FakeTransport` for HTTP, `FakeWsTransport` for the socket
-protocol.
+protocol, and `WsClient` tests that never dial `WS_API`.
 
 ## License
 

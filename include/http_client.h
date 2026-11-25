@@ -15,6 +15,7 @@
 #include <thread>
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
+#include "curl_runtime.h"
 #include "http_transport.h"
 
 using json = nlohmann::json;
@@ -25,11 +26,10 @@ using json = nlohmann::json;
  *
  * Three things here are not incidental:
  *
- * - libcurl's global state is initialised once per process. Doing it in the
- *   constructor and tearing it down in the destructor breaks as soon as a
- *   second client exists, because the first destructor invalidates handles the
- *   second one still uses. A function-local static keeps init/cleanup tied to
- *   program lifetime instead.
+ * - libcurl's global state is initialised once per process via
+ *   `wftEnsureCurlGlobalInit` (see `curl_runtime.h`). Doing init in one
+ *   constructor and cleanup in its destructor breaks as soon as a second
+ *   client exists.
  * - Ease handles and header lists are owned by RAII wrappers. Every early exit
  *   (failed perform, thrown status) used to be a manual cleanup site.
  * - Rate limiting is shared across clients rather than per-object. The API
@@ -95,7 +95,7 @@ public:
     explicit HttpClient(std::chrono::milliseconds minDelay = std::chrono::milliseconds(350))
         : minDelay_(minDelay)
     {
-        ensureGlobalInit();
+        wftEnsureCurlGlobalInit();
     }
 
     std::string Get(const std::string &url, const Headers &headers) override
@@ -105,16 +105,6 @@ public:
 
 private:
     std::chrono::milliseconds minDelay_;
-
-    /// libcurl global init, run once per process.
-    static void ensureGlobalInit()
-    {
-        static const bool initialised = []() {
-            curl_global_init(CURL_GLOBAL_DEFAULT);
-            return true;
-        }();
-        (void)initialised;
-    }
 
     /**
      * @brief Wait until the shared rate-limit slot is free, then claim it.

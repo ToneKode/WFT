@@ -12,6 +12,7 @@ add_executable(wft_tests
         test_market_api.cpp
         test_item_cache.cpp
         test_wfm_socket.cpp
+        test_ws_client.cpp
 )
 target_include_directories(wft_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(wft_tests PRIVATE wft_core doctest_main Threads::Threads)
