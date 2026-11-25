@@ -113,7 +113,8 @@ The Linux CI commands were run locally with gcc, the vcpkg manifest, and
 `WS` and `WSS`. The build was clean under `-Werror`, and `ctest --preset default`
 passed 65 cases / 222 assertions. The GitHub Actions Linux job passed the same
 way. The Windows job installed the manifest and compiled, then failed to link
-`wft_tests` until `ws2_32` was added for `WSAPoll` and the test's Winsock calls.
+`wft_tests` on `WSAPoll` and the test's Winsock calls. `wft_core` now links
+`ws2_32`, and the following Windows job passed configure, build, and `ctest`.
 
 Never run:
 
